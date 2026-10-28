@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+ <string name="background_guard_description">可选的后台守护：让 Android 系统绑定本应用的局域网配置与灯光同步后台。守护不接收界面事件、不读取窗口、不记录按键、不执行手势或全局操作；屏幕取色仍使用电视原厂接口。仅在你愿意时手动启用，关闭应用后台会停止网页和灯控。系统强行停止后仍可能需要手动重新打开。</string>
+</resources>

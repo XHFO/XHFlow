@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+ <integer name="guard_no_events">0</integer>
+ <integer name="guard_no_flags">0</integer>
+</resources>

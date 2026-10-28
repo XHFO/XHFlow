@@ -1,0 +1,30 @@
+# Build outputs, downloaded test dependencies, and local test signing material
+/build/
+**/__pycache__/
+*.py[cod]
+*.class
+*.jar
+*.apk
+*.aab
+*.apks
+*.keystore
+*.jks
+*.p12
+*.pfx
+*.pem
+*.key
+
+# Private runtime data and local tooling
+.env
+.env.*
+!.env.example
+local.properties
+/private/
+/device-data/
+/exports/
+/screenshots/
+/.cache/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
