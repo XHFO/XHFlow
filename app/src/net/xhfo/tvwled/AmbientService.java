@@ -34,6 +34,7 @@ public final class AmbientService extends Service {
     public static final String ACTION_CONFIG="net.xhfo.tvwled.CONFIG", ACTION_SERVER=ACTION_CONFIG;
     public static final String ACTION_SHUTDOWN="net.xhfo.tvwled.SHUTDOWN";
     public static final String ACTION_RECOVER="net.xhfo.tvwled.RECOVER";
+    static final String ACTION_APPLY="net.xhfo.tvwled.APPLY",EXTRA_EXPECTED_CONFIG="expectedConfigFingerprint";
     static final String PREFS="tvwled";
     private static final String TAG="TVWLED", CHANNEL="ambient";
     private static final int NOTICE=101;
@@ -87,6 +88,25 @@ public final class AmbientService extends Service {
         if(current!=null&&!current.destroyed){current.main.post(()->current.handleCommand(action));return;}
         context.startForegroundService(new Intent(context,AmbientService.class).setAction(action));
     }
+    /** Conditional settings updates never become an implicit request to enable synchronization. */
+    static void dispatchConfiguration(Context context,boolean applyOnly,String expectedFingerprint){
+        String action=applyOnly?ACTION_APPLY:ACTION_START;AmbientService current=liveInstance;
+        if(current!=null&&!current.destroyed){current.main.post(()->current.handleConfigurationCommand(action,expectedFingerprint));return;}
+        context.startForegroundService(new Intent(context,AmbientService.class).setAction(action).putExtra(EXTRA_EXPECTED_CONFIG,expectedFingerprint));
+    }
+    static boolean configurationCommandAllowed(String expected,String savedRaw,boolean enabled,boolean applyOnly) throws Exception {
+        return expected!=null&&expected.equals(ConfigServer.configurationFingerprint(savedRaw))&&(!applyOnly||enabled);
+    }
+    /** Gate initialization as well as application, so a cold automatic apply cannot revive a stop. */
+    static boolean runConfigurationCommand(SharedPreferences prefs,String expected,boolean applyOnly,boolean closing,Runnable initialize,Runnable command) throws Exception {
+        synchronized(ConfigServer.CONFIG_LOCK){
+            if((applyOnly&&closing)||!configurationCommandAllowed(expected,prefs.getString("layout",""),prefs.getBoolean("enabled",false),applyOnly))return false;
+            initialize.run();
+            // Initialization may invoke synchronous local callbacks; never apply a stale target.
+            if(!configurationCommandAllowed(expected,prefs.getString("layout",""),prefs.getBoolean("enabled",false),applyOnly))return false;
+            command.run();return true;
+        }
+    }
     static void refreshStatus(){AmbientService current=liveInstance;if(current!=null&&!current.destroyed)current.main.post(()->{current.publish();current.updateNotification();});}
     final class HostBinder extends Binder {
         void ensureHosted(){main.post(()->{
@@ -104,10 +124,12 @@ public final class AmbientService extends Service {
     }
     private SharedPreferences preferences(){return getSharedPreferences(PREFS,MODE_PRIVATE);}
     private void persistFlags(Boolean enabled,Boolean serverEnabled){
-        SharedPreferences.Editor edit=preferences().edit();
-        if(enabled!=null)edit.putBoolean("enabled",enabled);
-        if(serverEnabled!=null)edit.putBoolean("serverEnabled",serverEnabled);
-        preferenceError=edit.commit()?"":"开关未能保存到磁盘，设备重启后的恢复状态无法保证";
+        synchronized(ConfigServer.CONFIG_LOCK){
+            SharedPreferences.Editor edit=preferences().edit();
+            if(enabled!=null)edit.putBoolean("enabled",enabled);
+            if(serverEnabled!=null)edit.putBoolean("serverEnabled",serverEnabled);
+            preferenceError=edit.commit()?"":"开关未能保存到磁盘，设备重启后的恢复状态无法保证";
+        }
         if(!preferenceError.isEmpty())Log.e(TAG,preferenceError);
     }
     @Override public IBinder onBind(Intent intent){return hostBinder;}
@@ -115,7 +137,28 @@ public final class AmbientService extends Service {
         super.onCreate();liveInstance=this;
         getSystemService(NotificationManager.class).createNotificationChannel(new NotificationChannel(CHANNEL,"XH光流",NotificationManager.IMPORTANCE_LOW));
     }
-    @Override public int onStartCommand(Intent intent,int flags,int startId){return handleCommand(intent==null?ACTION_RECOVER:intent.getAction());}
+    @Override public int onStartCommand(Intent intent,int flags,int startId){
+        if(intent!=null&&(ACTION_APPLY.equals(intent.getAction())||intent.hasExtra(EXTRA_EXPECTED_CONFIG)))
+            return handleConfigurationCommand(intent.getAction(),intent.getStringExtra(EXTRA_EXPECTED_CONFIG));
+        return handleCommand(intent==null?ACTION_RECOVER:intent.getAction());
+    }
+    /** Recheck on the main thread: queued applies cannot revive a stopped sync or load a rival save. */
+    private int handleConfigurationCommand(String action,String expectedFingerprint){
+        if(destroyed||(!ACTION_APPLY.equals(action)&&!ACTION_START.equals(action)))return START_NOT_STICKY;
+        boolean applyOnly=ACTION_APPLY.equals(action);
+        try{
+            SharedPreferences prefs=preferences();
+            // A request can outlive the HTTP worker's original service instance. Prepare the
+            // foreground host, server, and display monitor before applying on a new instance.
+            boolean executed=runConfigurationCommand(prefs,expectedFingerprint,applyOnly,closing,
+                ()->{if(applyOnly)prepareBackend(false);},
+                ()->{if(applyOnly)applySavedConfiguration();else handleCommand(ACTION_START);});
+            if(executed)return START_STICKY;
+            publish();return prefs.getBoolean("serverEnabled",false)?START_STICKY:START_NOT_STICKY;
+        }catch(Exception failure){
+            Log.w(TAG,"Conditional configuration request was not applied",failure);publish();return START_NOT_STICKY;
+        }
+    }
     private int handleCommand(String action){
         if(destroyed)return START_NOT_STICKY;
         if(ACTION_SHUTDOWN.equals(action)){
@@ -131,9 +174,7 @@ public final class AmbientService extends Service {
             return START_NOT_STICKY;
         }
         if(!restoring&&!ACTION_CONFIG.equals(action)&&!ACTION_START.equals(action)&&!ACTION_STOP.equals(action))return START_NOT_STICKY;
-        closing=false;persistFlags(null,true);cancelRecovery();recovery="";
-        if(!restoring&&(ACTION_CONFIG.equals(action)||ACTION_START.equals(action)))GuardService.requestManualBind(this);
-        ensureForeground();ensureServer();ensureEnvironment();
+        prepareBackend(!restoring&&(ACTION_CONFIG.equals(action)||ACTION_START.equals(action)));
         if(ACTION_STOP.equals(action)){
             persistFlags(false,null);cancelPower();suspendedReason="";stopSession("同步已停止；配置后台继续运行");sourceOwned=false;
         }else if(ACTION_START.equals(action)){
@@ -141,6 +182,12 @@ public final class AmbientService extends Service {
         }else resumeSavedSession();
         publish();updateNotification();
         return START_STICKY;
+    }
+    /** Hosting is independent of synchronization intent; this never writes enabled. */
+    private void prepareBackend(boolean manualBind){
+        closing=false;persistFlags(null,true);cancelRecovery();recovery="";
+        if(manualBind)GuardService.requestManualBind(this);
+        ensureForeground();ensureServer();ensureEnvironment();
     }
     private void activateBackend(){ensureForeground();ensureServer();ensureEnvironment();resumeSavedSession();publish();updateNotification();}
     private void ensureEnvironment(){
@@ -341,15 +388,18 @@ public final class AmbientService extends Service {
     }
     private Notification notification(){
         boolean syncing=preferences().getBoolean("enabled",false);
+        Session active=session;long now=SystemClock.elapsedRealtime();
+        boolean running=syncing&&active!=null&&active.isCurrent()&&active.valid&&now-active.lastValid<=1200&&active.sent.get()>0&&now-active.lastSent<=1200;
         PendingIntent open=PendingIntent.getActivity(this,1,new Intent(this,MainActivity.class),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
         PendingIntent pause=PendingIntent.getService(this,2,new Intent(this,AmbientService.class).setAction(ACTION_STOP),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
-        PendingIntent shutdown=PendingIntent.getService(this,3,new Intent(this,AmbientService.class).setAction(ACTION_SHUTDOWN),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
+        String title=syncing?(running?"XH光流 · 正在输出":"XH光流 · 已开启，暂停输出"):"XH光流 · 已关闭";
+        String output=syncing?(running?"灯光正在跟随画面":state):"总开关已关闭，网页配置仍可使用";
+        String protection=GuardService.isConnected()?"后台守护已连接":registeredForegroundType()>0?"系统前台服务已登记":"后台保护受限";
         Notification.Builder builder=new Notification.Builder(this,CHANNEL).setSmallIcon(android.R.drawable.ic_menu_view)
-            .setContentTitle(syncing?"XH光流同步中":"XH光流配置后台")
-            .setContentText(GuardService.isConnected()?"系统绑定守护已连接 · 点此显示配置二维码":registeredForegroundType()>0?"系统前台服务已登记 · 点此显示配置二维码":"后台保护受限 · 点此查看保活设置")
+            .setContentTitle(title)
+            .setContentText(output+" · "+protection+" · 点此显示配置二维码")
             .setContentIntent(open).setOngoing(true);
-        if(syncing)builder.addAction(new Notification.Action.Builder(android.R.drawable.ic_media_pause,"停止同步",pause).build());
-        builder.addAction(new Notification.Action.Builder(android.R.drawable.ic_menu_close_clear_cancel,"关闭后台",shutdown).build());
+        builder.addAction(new Notification.Action.Builder(syncing?android.R.drawable.ic_media_pause:android.R.drawable.ic_menu_view,syncing?"关闭 XH光流":"打开 XH光流",syncing?pause:open).build());
         return builder.build();
     }
     private void updateNotification(){

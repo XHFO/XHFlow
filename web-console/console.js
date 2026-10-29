@@ -88,40 +88,69 @@
   const $=id=>document.getElementById(id),P=scope.LayoutPreview,M=scope.LayoutModel;
   const token=new URLSearchParams(location.search).get('token')||'';
   let online=false,busy=false,initializing=false,savedSignature=null,savedDocument=null,pendingApply=false,lastStatus=null,polling=false,initialized=false,brightnessValue=.6,softeningValue=.35,colorValues=colorDefaults(),runtimeValues=runtimeDefaults(),inputsSupported=[],sourceOptionsKey='',outputExtras={},preferenceExtras={},command='',previewValue=null,previewReceivedAt=0,previewBusy=false,previewError='';
+  const AUTOSAVE_DELAY=650,CACHE_KEY='xhflow.editor-draft.v1';
+  let saving=false,saveTimer=null,savePhase='',saveError='',saveConflict=false,conflictRemote=null,knownFingerprint='',hasBaseline=false,hasEdits=false,editRevision=0,suppressEdits=0,observedSignature=null,gestureActive=false,addressEditing=false,uncertainWrite=null,verifiedAddress='',cacheError=false;
+  function cachedDraft(){try{const value=JSON.parse(scope.localStorage.getItem(CACHE_KEY)||'null');return value&&value.version===1?value:null;}catch(error){return null;}}
+  function rememberDraft(){
+    try{const current=inspection();if(!current.valid||token&&!hasBaseline&&!hasEdits)return;if(token&&!dirty()){scope.localStorage.removeItem(CACHE_KEY);cacheError=false;return;}scope.localStorage.setItem(CACHE_KEY,JSON.stringify({version:1,document:current.value,baseSignature:savedSignature,updatedAt:Date.now()}));cacheError=false;}catch(error){cacheError=true;}
+  }
+  function cancelAutosave(){if(saveTimer!==null){clearTimeout(saveTimer);saveTimer=null;}}
+  function scheduleAutosave(){
+    cancelAutosave();
+    if(!token||!online||!initialized||initializing||busy||saving||saveConflict||saveError||!hasEdits||(!dirty()&&!(pendingApply&&requestedEnabled(lastStatus)===true))||gestureActive||addressEditing||document.hidden)return;
+    const current=inspection();if(!current.valid||!conditionReady(runtimeValues,inputsSupported).ok||P.getController().ledCount>OUTPUT_LIMIT)return;
+    saveTimer=setTimeout(()=>{saveTimer=null;save();},AUTOSAVE_DELAY);
+  }
+  function edited(){
+    if(suppressEdits)return;
+    const current=inspection(),signature=current.valid?current.signature:null;
+    if(signature!==null&&signature===observedSignature)return;
+    observedSignature=signature;hasEdits=true;editRevision++;saveError='';rememberDraft();render();scheduleAutosave();
+  }
+  async function conflict(message,snapshot){
+    saveConflict=true;saveError='';cancelAutosave();
+    try{conflictRemote=snapshot||await editorSnapshot();}catch(error){conflictRemote=null;}
+    feedback(message||'电视配置已在其他页面更改。本页调整已保留，请选择要使用的设置。');render();rememberDraft();
+  }
   function feedback(text){$('consoleFeedback').textContent=text;}
   function draft(){const value=P.getMapping();value.controller.address=address($('wledAddress').value);value.output={...M.clone(outputExtras),brightness:brightnessValue,softening:{...(outputExtras.softening||{}),enabled:$('softeningEnabled').checked,strength:softeningValue},blackBars:{...(outputExtras.blackBars||{}),enabled:$('blackBarsEnabled').checked},color:{...(outputExtras.color||{}),...colorValues}};value.preferences={...M.clone(preferenceExtras),autoStart:$('autoStart').checked};value.runtime=M.clone(runtimeValues);return normalize(value,M);}
   function inspection(){try{const value=draft();return {valid:true,value,signature:stable(value)};}catch(error){return {valid:false,error:error.message,signature:null};}}
-  function dirty(){const current=inspection();return !current.valid||current.signature!==savedSignature;}
+  function dirty(){const current=inspection();return saveConflict||!current.valid||current.signature!==savedSignature;}
   function render(){
-    const current=inspection(),changed=!current.valid||current.signature!==savedSignature,running=!!(lastStatus&&lastStatus.running),requested=requestedEnabled(lastStatus),conditions=conditionReady(runtimeValues,inputsSupported),compatible=P.getController().ledCount<=OUTPUT_LIMIT;
-    $('save').disabled=!online||busy||!current.valid||!conditions.ok||!compatible||(!changed&&!!savedDocument&&!(requested===true&&pendingApply));
-    $('save').textContent=command==='saving'?'正在保存…':command==='applying'?'正在应用…':requested===true?'保存并应用':'保存到电视';
+    const current=inspection(),changed=saveConflict||!current.valid||current.signature!==savedSignature,running=!!(lastStatus&&lastStatus.running),requested=requestedEnabled(lastStatus),conditions=conditionReady(runtimeValues,inputsSupported),compatible=P.getController().ledCount<=OUTPUT_LIMIT;
+    $('save').disabled=!online||busy||saving||saveConflict||!current.valid||!conditions.ok||!compatible||(!changed&&!!savedDocument&&!(requested===true&&pendingApply));
+    $('save').textContent=saving?'正在保存…':'重试保存';$('save').hidden=!saveError||saveConflict;
+    $('saveConflict').hidden=!saveConflict;$('useLocal').disabled=!online||busy||saving||!current.valid||!conditions.ok||!compatible;$('useRemote').disabled=!online||busy||saving;
     $('export').disabled=busy||!current.valid;$('import').disabled=busy;
     const canStart=!!savedDocument&&!changed&&current.valid&&conditions.ok&&compatible;
     $('syncSwitch').disabled=!online||busy||(requested===null&&!running)||(requested!==true&&!running&&!canStart);
-    $('syncSwitch').setAttribute('aria-checked',String(online&&requested===true));$('syncSwitch').setAttribute('aria-label',online?(requested===true?'关闭同步':requested===false?'开启同步':'同步请求状态未知'):'同步状态未知，电视未连接');$('syncSwitch').setAttribute('aria-busy',String(!!command));
-    const requestedLabel=requested===null?'同步请求状态未知':requested===true?'关闭同步':'开启同步';
-    $('syncSwitchLabel').textContent=!online?'同步状态未知':command==='stopping'?'正在关闭…':command==='starting'?'正在开启…':command==='applying'?'正在应用…':requestedLabel;
-    if(online)$('syncSwitch').setAttribute('aria-label',$('syncSwitchLabel').textContent);
-    $('applyChanges').hidden=!online||requested!==true||!pendingApply;$('applyChanges').disabled=!online||busy||!canStart;
-    $('pendingApplyNotice').hidden=!online||!pendingApply;$('pendingApplyNotice').textContent=requested===true?'电视中有已保存但尚未应用的设置。'+(changed?'请先保存当前草稿并应用。':'可点击“应用已保存的更改”。'):'已保存的设置将在下次开启同步时生效。';
-    $('saveHint').textContent=requested===true?'保存后自动应用新设置，并回读确认实际配置。':'保存不会开启同步；下次手动开启时使用已保存的设置。';
+    $('syncSwitch').setAttribute('aria-checked',String(online&&requested===true));$('syncSwitch').setAttribute('aria-label',online?'XH光流总开关':'XH光流总开关，电视未连接');$('syncSwitch').setAttribute('aria-busy',String(!!command));
+    const requestedLabel=requested===null?'总开关状态未知':requested===true?'已开启':'已关闭';
+    $('syncSwitchLabel').textContent=!online?'总开关状态未知':command==='stopping'?'正在关闭…':command==='starting'?'正在开启…':command==='applying'?'正在应用…':requestedLabel;
+    $('applyChanges').hidden=!online||requested!==true||!pendingApply||saving;$('applyChanges').disabled=!online||busy||saving||!canStart;
+    $('pendingApplyNotice').hidden=!online||!pendingApply;$('pendingApplyNotice').textContent=requested===true?'电视中有已保存但尚未应用的设置。'+(changed?'本页调整将自动保存并应用。':'可重试应用已保存的设置。'):'已保存的设置将在下次开启同步时生效。';
+    $('saveHint').textContent=cacheError&&(!token||!online)?'浏览器暂不能保留本页调整，请保持页面打开或导出配置。':!token?'演示中的有效配置自动保存在此浏览器，不会控制真实灯带。':saveConflict?'本页与电视设置不一致，自动保存已暂停。':saveError?saveError:!current.valid?'请补全输入；电视继续使用上次有效设置。':!conditions.ok?conditions.message:requested===true?'调整停下后自动保存并应用；连续拖动时不会中断编辑。':'调整自动保存到电视；总开关关闭时保持关闭。';
     $('probe').disabled=!online||busy;$('reconnect').disabled=busy;
     for(const id of ['wledAddress','brightness','autoStart','softeningEnabled','softeningStrength','blackBarsEnabled'])$(id).disabled=busy;
     for(const key of Object.keys(COLOR_FIELDS)){for(const suffix of ['', '-number']){const node=$('color-'+key+suffix);node.disabled=busy;if(document.activeElement!==node&&Number.isFinite(colorValues[key]))node.value=String(colorValues[key]);}}$('resetColor').disabled=busy;
     try{normalizeColor(colorValues);$('colorValidation').textContent='';}catch(error){$('colorValidation').textContent=error.message;}
     renderConditions();
-    document.querySelector('.workspace').inert=busy||initializing;
+    document.querySelector('.workspace').inert=busy||(initializing&&!initialized);
     $('brightnessOutput').textContent=Number((brightnessValue*100).toFixed(2))+'%';
     $('softeningOutput').textContent=Number((softeningValue*100).toFixed(2))+'%';$('softeningStrength').disabled=busy||!$('softeningEnabled').checked;
-    const saveState=$('saveState');saveState.className='save-state '+(changed?'is-dirty':'is-saved');
-    if(!online)saveState.textContent='本地草稿 · 未应用到电视';
-    else if(changed)saveState.textContent=savedDocument?'有未保存的改动':'尚未保存到电视';
-    else if(pendingApply)saveState.textContent='已保存 · '+(requested===true?'尚未应用':'下次开启时生效');
-    else saveState.textContent='已保存到电视';
+    const saveState=$('saveState');saveState.className='save-state '+(saveConflict||saveError||cacheError?'is-error':!token&&current.valid?'is-saved':changed?'is-dirty':'is-saved');
+    if(saveConflict)saveState.textContent='设置冲突 · 等待选择';
+    else if(saving)saveState.textContent=savePhase==='applying'?'正在应用…':'正在自动保存…';
+    else if(!token)saveState.textContent=cacheError?'本地保存未成功 · 可导出配置':current.valid?'已自动保存到此浏览器':'等待补全输入 · 本地演示';
+    else if(!online)saveState.textContent=hasEdits?'等待重连 · 本页调整已保留':'电视未连接';
+    else if(saveError)saveState.textContent='保存或应用未确认 · 可重试';
+    else if(!current.valid||!conditions.ok||!compatible)saveState.textContent='等待补全设置';
+    else if(changed)saveState.textContent=addressEditing?'完成地址输入后自动保存':hasEdits?'等待自动保存…':'请连接灯带并完成设置';
+    else if(pendingApply)saveState.textContent='已保存 · '+(requested===true?'等待应用':'总开关开启后生效');
+    else saveState.textContent=requested===true?'已保存并应用到电视':'已自动保存到电视';
     $('outputLimit').hidden=compatible;$('outputLimit').textContent=compatible?'':'当前控制器有 '+P.getController().ledCount+' 颗灯珠。本测试版最多输出 '+OUTPUT_LIMIT+' 颗；可编辑与导出，暂不能保存到电视或开始同步。';
     $('save').title=!compatible?'超出本测试版 480 颗输出上限':!current.valid?current.error:!conditions.ok?conditions.message:!online?'连接电视服务后可保存':'';
-    $('syncSwitch').title=!online?'连接电视后确认同步状态':requested===true||running?'关闭同步（未保存改动会保留）':changed?'请先保存当前改动':!savedDocument?'请先保存布局':'';
+    $('syncSwitch').title=!online?'连接电视后确认同步状态':requested===true||running?'关闭 XH光流；网页配置保持可用':changed?'当前调整正在等待自动保存':!savedDocument?'请先完成灯带配置':'';
     $('runtimeBadge').textContent=!online?'未连接':running?'正在输出':requested===true?'已开启 · 已暂停':requested===false?'已关闭':'状态未知';
     $('runtimeBadge').classList.toggle('is-running',online&&running);renderLivePreview();
   }
@@ -129,15 +158,15 @@
     $('sleepOff').checked=runtimeValues.sleepOff;$('sleepOff').disabled=busy;
     const filter=runtimeValues.sourceFilter;$('sourceOffWhenExcluded').checked=filter.offWhenExcluded;$('sourceOffWhenExcluded').disabled=busy||!filter.enabled;$('sourceFilterEnabled').checked=filter.enabled;$('sourceFilterEnabled').disabled=busy||(!filter.enabled&&!inputsSupported.length);
     const key=stable(inputsSupported),wrap=$('sourceOptions');
-    if(key!==sourceOptionsKey){sourceOptionsKey=key;wrap.replaceChildren();inputsSupported.forEach((item,index)=>{const label=document.createElement('label');label.className='source-option';const input=document.createElement('input');input.type='checkbox';input.id='source-option-'+index;input.value=item.id;input.dataset.sourceId=item.id;const text=document.createElement('span');text.textContent=item.label;label.append(input,text);wrap.append(label);input.addEventListener('change',event=>{const allowed=new Set(runtimeValues.sourceFilter.allowed);if(event.target.checked)allowed.add(item.id);else allowed.delete(item.id);runtimeValues.sourceFilter.allowed=[...allowed];render();});});}
+    if(key!==sourceOptionsKey){sourceOptionsKey=key;wrap.replaceChildren();inputsSupported.forEach((item,index)=>{const label=document.createElement('label');label.className='source-option';const input=document.createElement('input');input.type='checkbox';input.id='source-option-'+index;input.value=item.id;input.dataset.sourceId=item.id;const text=document.createElement('span');text.textContent=item.label;label.append(input,text);wrap.append(label);input.addEventListener('change',event=>{const allowed=new Set(runtimeValues.sourceFilter.allowed);if(event.target.checked)allowed.add(item.id);else allowed.delete(item.id);runtimeValues.sourceFilter.allowed=[...allowed];render();edited();});});}
     for(const node of wrap.querySelectorAll('input')){node.checked=filter.allowed.includes(node.value);node.disabled=busy||!filter.enabled;}
-    $('sourceListHint').textContent=inputsSupported.length?(online?'接口列表来自电视系统实际确认；保存并应用后生效。':'上次读取的接口列表；连接电视后才能保存与应用。'):'未取得接口列表，暂不能开启筛选；不会猜测或预填端口名称。';
+    $('sourceListHint').textContent=inputsSupported.length?(online?'接口列表来自电视系统实际确认，改动将自动保存。':'上次读取的接口列表；重连后自动保存有效调整。'):'未取得接口列表，暂不能开启筛选；不会猜测或预填端口名称。';
     const validation=conditionReady(runtimeValues,inputsSupported);$('sourceValidation').textContent=validation.ok?'':validation.message;
   }
   function setBusy(value){busy=value;render();}
   function serviceState(connected,message){
-    online=connected;
-    $('serviceMode').textContent=connected?'XH光流 · 局域网控制台':'本地演示';
+    online=connected;if(!connected)cancelAutosave();
+    $('serviceMode').textContent=connected?'XH光流 · 局域网控制台':token?'电视未连接':'本地演示';
     $('serviceMessage').textContent=message||'所有连接、排布和同步设置保存在这台电视中。';
     $('reconnect').hidden=connected||!token;
     if(!connected){$('displayCondition').textContent='显示状态未知（电视未连接）';$('inputCondition').textContent='当前输入源未知（电视未连接）';$('runtimeState').textContent='电视服务未连接，同步状态未知；可编辑并导出布局。';$('runtimeMetrics').textContent='';$('backgroundState').textContent='后台保护状态未知';$('backgroundHint').textContent='电视未连接，重新连接后确认守护与前台保护状态。';const protection=document.querySelector('.background-protection');protection.classList.toggle('is-protected',false);protection.classList.toggle('is-limited',false);}
@@ -145,8 +174,8 @@
   }
   function renderLivePreview(){
     const running=!!(lastStatus&&lastStatus.running),now=Date.now(),fresh=!previewError&&previewFresh(previewValue,previewReceivedAt,now,online,running,document.hidden);
-    $('liveBadge').textContent=fresh?'实时取色 · 草稿映射':'预览已暂停';$('liveBadge').classList.toggle('is-running',fresh);
-    $('liveState').textContent=!online?'连接电视并开启同步后显示当前取色；此处可先编辑排布。':document.hidden?'页面在后台，实时预览已暂停。':!running?(requestedEnabled(lastStatus)===true?'同步已开启，当前暂停输出；取色颜色已清空。':'同步已关闭，取色颜色已清空。'):previewError?'实时取色暂不可用：'+previewError:!previewValue||!previewValue.available?'正在等待电视返回当前画面的取色数据。':!fresh?'取色超过 1.5 秒未更新，颜色已清空。':'屏幕内为边缘取色生成的渐变示意，非画面截图；灯带为草稿映射预览，未应用颜色校正、输出亮度与柔化。';
+    $('liveBadge').textContent=fresh?'实时取色 · 排布预览':'预览已暂停';$('liveBadge').classList.toggle('is-running',fresh);
+    $('liveState').textContent=!online?'连接电视并开启同步后显示当前取色；此处可先编辑排布。':document.hidden?'页面在后台，实时预览已暂停。':!running?(requestedEnabled(lastStatus)===true?'同步已开启，当前暂停输出；取色颜色已清空。':'同步已关闭，取色颜色已清空。'):previewError?'实时取色暂不可用：'+previewError:!previewValue||!previewValue.available?'正在等待电视返回当前画面的取色数据。':!fresh?'取色超过 1.5 秒未更新，颜色已清空。':'屏幕内为边缘取色生成的渐变示意，非画面截图；灯带为本页排布预览，未应用颜色校正、输出亮度与柔化。';
     if(previewValue&&previewValue.available){const region=previewValue.activeRegion,percent=value=>Number((value*100).toFixed(1))+'%';$('liveRegion').textContent=(fresh?'当前':'上次')+'有效画面 '+percent(region.right-region.left)+' × '+percent(region.bottom-region.top)+' · 上 '+percent(region.top)+' / 下 '+percent(1-region.bottom)+' / 左 '+percent(region.left)+' / 右 '+percent(1-region.right);$('liveAge').textContent=previewValue.points.length+' 个取色点 · 每边 '+previewValue.points.length/4+' 点 · 数据年龄 '+Math.max(0,Math.round(previewValue.ageMs+now-previewReceivedAt))+' ms';}
     else{$('liveRegion').textContent='有效画面范围尚未提供';$('liveAge').textContent='实时取色尚未更新';}
     P.setLivePreview(fresh?previewValue:null);
@@ -159,12 +188,12 @@
     catch(error){previewError=error.message;}
     finally{previewBusy=false;renderLivePreview();}
   }
-  async function api(path,method='GET',body){
+  async function api(path,method='GET',body,extraHeaders={}){
     if(!token)throw new Error('缺少电视访问令牌，请从电视显示的配置地址进入。');
     if(method==='POST'&&body===undefined)body={};
     const abort=new AbortController(),timer=setTimeout(()=>abort.abort(),10000);
     try{
-      const headers={'X-TVWLED-Token':token};if(body!==undefined)headers['Content-Type']='application/json';
+      const headers={'X-TVWLED-Token':token,...extraHeaders};if(body!==undefined)headers['Content-Type']='application/json';
       const response=await fetch(path,{method,headers,body:body===undefined?undefined:JSON.stringify(body),signal:abort.signal,cache:'no-store',credentials:'same-origin'});
       const text=await response.text();let data;
       try{data=text?JSON.parse(text):null;}catch(error){throw new Error('电视返回了无法识别的数据。');}
@@ -176,10 +205,32 @@
   function applyDocument(value){
     const normalized=normalize(value,M);
     // Validate the complete document before mutating any visible control.
-    P.setController(normalized.controller);P.setConfig(normalized.layout);
+    suppressEdits++;try{P.setController(normalized.controller);P.setConfig(normalized.layout);}finally{suppressEdits--;}
     $('wledAddress').value=normalized.controller.address;brightnessValue=normalized.output.brightness;$('brightness').value=String(brightnessValue*100);$('autoStart').checked=normalized.preferences.autoStart;
     outputExtras=M.clone(normalized.output);preferenceExtras=M.clone(normalized.preferences);softeningValue=normalized.output.softening.strength;$('softeningEnabled').checked=normalized.output.softening.enabled;$('softeningStrength').value=String(softeningValue*100);$('blackBarsEnabled').checked=normalized.output.blackBars.enabled;colorValues=M.clone(normalized.output.color);runtimeValues=M.clone(normalized.runtime);
-    return normalized;
+    observedSignature=stable(normalized);return normalized;
+  }
+  // A configuration and its conditional-write fingerprint must come from one snapshot.
+  // Never attach the fingerprint from a later status response to an earlier document.
+  async function editorSnapshot(status){
+    let before=status||await api('/api/status');
+    if(before.supportsEditorSnapshot===true){
+      const snapshot=await api('/api/editor');
+      if(!snapshot||!Object.prototype.hasOwnProperty.call(snapshot,'configuration')||typeof snapshot.savedConfigFingerprint!=='string')throw new Error('电视返回的编辑配置快照无效，请更新应用后重试。');
+      const value=snapshot.configuration===null?null:normalize(snapshot.configuration,M),fingerprint=snapshot.savedConfigFingerprint;
+      if(value?!/^[a-f0-9]{64}$/.test(fingerprint):fingerprint!=='')throw new Error('电视配置快照缺少对应指纹，已暂停自动保存。');
+      return {value,fingerprint};
+    }
+    for(let attempt=0;attempt<3;attempt++){
+      const value=await api('/api/config'),after=await api('/api/status');
+      const first=before.savedConfigFingerprint||'',second=after.savedConfigFingerprint||'';
+      if(first===second)return {value:value?normalize(value,M):null,fingerprint:second};
+      before=after;
+    }
+    throw new Error('电视设置正在被其他页面修改，暂无法取得一致配置；自动保存已暂停，请稍后重试。');
+  }
+  function baseline(snapshot){
+    savedDocument=snapshot.value;savedSignature=savedDocument?stable(savedDocument):null;knownFingerprint=snapshot.fingerprint;hasBaseline=true;
   }
   function runtime(status){
     if(!status||typeof status.running!=='boolean')throw new Error('电视返回的运行状态无效。');
@@ -207,23 +258,37 @@
     render();
   }
   async function refresh(){
-    if(!token||!online||polling||initializing||busy||document.hidden)return;
+    if(!token||polling||initializing||busy||saving||document.hidden)return;
+    if(!online){await initialize();return;}
     polling=true;
-    try{const status=await api('/api/status');if(!online)serviceState(true);runtime(status);}
-    catch(error){serviceState(false,'电视服务暂时不可用：'+error.message+' 当前改动保留在此页面。');}
+    try{const status=await api('/api/status');runtime(status);}
+    catch(error){serviceState(false,'电视服务暂时不可用：'+error.message+' 有效调整已保留，重连后继续保存。');}
     finally{polling=false;}
   }
   async function initialize(){
-    if(!token){serviceState(false,'当前为本地演示，可编辑、导入和导出；从电视显示的专属配置地址进入后，可保存与控制灯光。');return;}
-    const preserveDraft=initialized;initializing=true;setBusy(true);$('serviceMode').textContent='正在连接电视';
+    if(initializing)return;
+    if(!token){const cached=cachedDraft();if(cached){try{applyDocument(cached.document);}catch(error){}}initialized=true;observedSignature=inspection().signature;rememberDraft();serviceState(false,'当前为本地演示，配置自动保存在此浏览器；从电视的专属地址进入后可自动保存到电视。');return;}
+    const preserveDraft=hasBaseline||hasEdits,previousSignature=savedSignature,wasDirty=hasEdits&&dirty();initializing=true;cancelAutosave();render();$('serviceMode').textContent='正在连接电视';
     try{
-      const [status,value]=await Promise.all([api('/api/status'),api('/api/config')]);
-      if(value){savedDocument=normalize(value,M);savedSignature=stable(savedDocument);if(!preserveDraft)applyDocument(savedDocument);}
-      else{savedDocument=null;savedSignature=null;pendingApply=false;}
-      serviceState(true);runtime(status);
-      feedback(preserveDraft?'已重新连接电视，保留当前草稿。请核对未保存状态后继续。':value?(pendingApply&&requestedEnabled(status)===true?'已读取保存的配置，但电视尚未应用这些设置。':'已读取电视保存的配置。'):'电视尚未保存布局。请先检测 WLED，再按实际安装校准。');
-    }catch(error){serviceState(false,'无法连接电视配置服务：'+error.message+' 当前为本地演示。');feedback('连接后可重试读取电视配置。');}
-    finally{initialized=true;initializing=false;setBusy(false);}
+      const status=await api('/api/status'),snapshot=await editorSnapshot(status);
+      const remote=snapshot.value,remoteSignature=remote?stable(remote):null;
+      const cached=!preserveDraft?cachedDraft():null;
+      if(!preserveDraft){
+        baseline(snapshot);verifiedAddress=remote?remote.controller.address:'';
+        if(remote)applyDocument(remote);
+        if(cached){
+          try{const restored=normalize(cached.document,M);if(stable(restored)!==remoteSignature){applyDocument(restored);hasEdits=true;editRevision++;if(cached.baseSignature!==remoteSignature){saveConflict=true;conflictRemote={value:remote,fingerprint:knownFingerprint};}}}catch(error){}
+        }
+      }else if(!wasDirty){
+        baseline(snapshot);verifiedAddress=remote?remote.controller.address:'';if(remote)applyDocument(remote);
+      }else if(previousSignature===remoteSignature||(uncertainWrite&&uncertainWrite.signature===remoteSignature)){
+        baseline(snapshot);uncertainWrite=null;
+      }else{saveConflict=true;conflictRemote=snapshot;}
+      if(!remote)pendingApply=false;
+      saveError='';serviceState(true);runtime(status);
+      feedback(saveConflict?'电视设置已经改变，本页调整已保留；请选择要使用的设置。':preserveDraft?'已重新连接，保留本页调整并继续自动保存。':remote?'已读取电视设置，后续调整将自动保存。':'请连接 WLED 并校准排布，完成后自动保存。');
+    }catch(error){serviceState(false,'无法连接电视：'+error.message+' 有效调整保留在此浏览器，稍后自动重连。');}
+    finally{initialized=true;initializing=false;observedSignature=inspection().signature;render();rememberDraft();scheduleAutosave();}
   }
   async function confirmApplied(fingerprint){
     if(typeof fingerprint!=='string'||!fingerprint)throw new Error('电视未提供已保存配置的指纹，暂无法确认应用结果。');
@@ -237,52 +302,82 @@
     throw new Error('电视尚未确认使用新配置；设置已保存，请稍后查看或手动应用。');
   }
   async function save(){
-    const current=inspection();if(!online||busy||!current.valid||!conditionReady(runtimeValues,inputsSupported).ok||P.getController().ledCount>OUTPUT_LIMIT)return;
-    const applyNow=requestedEnabled(lastStatus)===true;command='saving';setBusy(true);let saved=false;
+    cancelAutosave();
+    let current=inspection();if(!online||busy||saving||saveConflict||!current.valid||!conditionReady(runtimeValues,inputsSupported).ok||P.getController().ledCount>OUTPUT_LIMIT)return;
+    if(current.signature===savedSignature&&!(pendingApply&&requestedEnabled(lastStatus)===true)){saveError='';render();return;}
+    const revision=editRevision;saving=true;savePhase='saving';saveError='';render();let wrote=false;
     try{
-      const submitted=await api('/api/config','POST',current.value);
-      const persisted=normalize(await api('/api/config'),M);
-      if(stable(persisted)!==current.signature)throw new Error('已提交，但回读的配置不一致。请重新读取并核对后再开始同步。');
-      savedDocument=persisted;savedSignature=current.signature;pendingApply=true;saved=true;
+      const before=await api('/api/status');runtime(before);
+      if((before.savedConfigFingerprint||'')!==knownFingerprint){
+        const snapshot=await editorSnapshot(before),signature=snapshot.value?stable(snapshot.value):null;
+        if(uncertainWrite&&signature===uncertainWrite.signature){baseline(snapshot);uncertainWrite=null;}
+        else{await conflict('电视设置已被其他页面修改，本页调整没有覆盖它。',snapshot);return;}
+      }
+      if(current.value.controller.address!==verifiedAddress){
+        const target=current.value.controller.address,result=await api('/api/probe','POST',{address:target});
+        const device=controller({address:target,name:result.name||'WLED',ledCount:result.ledCount});
+        if(editRevision!==revision||inspection().signature!==current.signature)return;
+        suppressEdits++;try{P.setController(device);$('wledAddress').value=device.address;}finally{suppressEdits--;}
+        verifiedAddress=target;current=inspection();observedSignature=current.signature;
+        $('probeResult').textContent=device.name+' · '+device.ledCount+' 颗灯珠'+(result.version?' · '+result.version:'');
+        if(!current.valid||device.ledCount>OUTPUT_LIMIT){feedback('已读取新控制器。请按实际灯珠数量校准排布；完成后自动保存。');return;}
+      }
+      if(current.signature!==savedSignature){
+        uncertainWrite={signature:current.signature,value:current.value};
+        const submitted=await api('/api/config','POST',current.value,before.supportsConditionalSave===true?{'If-Match':knownFingerprint||'none'}:{});
+        const snapshot=await editorSnapshot(),persisted=snapshot.value;
+        if(!persisted||stable(persisted)!==current.signature||submitted&&submitted.savedConfigFingerprint&&submitted.savedConfigFingerprint!==snapshot.fingerprint){await conflict('提交后的回读与本页设置不一致，自动保存已暂停。',snapshot);return;}
+        baseline(snapshot);pendingApply=true;wrote=true;uncertainWrite=null;
+      }
       const status=await api('/api/status');runtime(status);
-      const targetFingerprint=submitted&&typeof submitted.savedConfigFingerprint==='string'&&submitted.savedConfigFingerprint?submitted.savedConfigFingerprint:status.savedConfigFingerprint;
-      if(status.savedConfigFingerprint!==targetFingerprint){savedSignature=null;throw new Error('本次保存后，电视配置已被其他请求改变。当前草稿已保留，请重新保存或读取核对。');}
-      if(applyNow){
-        if(status.enabled!==true)throw new Error('同步状态已改变，保留已保存的设置；请确认后再手动开启。');
-        command='applying';render();await api('/api/start','POST');const applied=await confirmApplied(targetFingerprint);
-        feedback(applied.running?'已保存，并确认电视正在使用新配置。':'已保存并应用新配置；当前按运行条件暂停输出。');
-      }else feedback('已保存到电视并回读确认。同步保持关闭，下次开启时使用新设置。');
-    }catch(error){feedback((saved?'设置已保存，应用未确认：':'保存未确认：')+error.message);}
-    finally{command='';setBusy(false);}
+      if((status.savedConfigFingerprint||'')!==knownFingerprint){await conflict('本次保存后电视设置又被其他页面改变，本页调整已保留。');return;}
+      if(status.enabled===true&&editRevision===revision&&inspection().signature===savedSignature&&pendingApply){
+        if(status.supportsSafeApply===true){
+          savePhase='applying';render();const applied=await api('/api/apply','POST',{}, {'If-Match':knownFingerprint});
+          if(applied.requested!==false){
+            try{await confirmApplied(knownFingerprint);}catch(error){
+              const latest=await api('/api/status');runtime(latest);if(latest.enabled!==false)throw error;
+            }
+          }else runtime(await api('/api/status'));
+        }else{saveError='已保存。电视版本暂不支持安全自动应用，请更新应用或手动应用已保存的设置。';}
+      }
+      if(!saveError)feedback(requestedEnabled(lastStatus)===true?(pendingApply?'已自动保存，最新调整将继续应用。':'已自动保存，并确认电视使用新设置。'):'已自动保存到电视，总开关保持关闭。');
+    }catch(error){
+      if(error.status===409){await conflict('电视设置已改变，自动保存已暂停。本页调整已保留。');}
+      else{saveError=(wrote?'设置已保存，应用未确认：':'自动保存未确认：')+error.message;feedback(saveError);if(!error.status)serviceState(false,'连接暂不可用，有效调整已保留，重连后继续保存。');}
+    }finally{saving=false;savePhase='';render();rememberDraft();if(editRevision!==revision&&!saveConflict){saveError='';scheduleAutosave();}}
   }
   async function start(){
-    if(!online||busy||!savedDocument||dirty()||!conditionReady(runtimeValues,inputsSupported).ok||P.getController().ledCount>OUTPUT_LIMIT)return;
+    if(!online||busy||saving||!savedDocument||dirty()||!conditionReady(runtimeValues,inputsSupported).ok||P.getController().ledCount>OUTPUT_LIMIT)return;
     command=requestedEnabled(lastStatus)===true?'applying':'starting';setBusy(true);
     try{
-      const before=await api('/api/status');runtime(before);await api('/api/start','POST');const applied=await confirmApplied(before.savedConfigFingerprint);
+      const before=await api('/api/status'),snapshot=await editorSnapshot(before);runtime(before);
+      if(snapshot.fingerprint!==knownFingerprint||(snapshot.value?stable(snapshot.value):null)!==savedSignature){await conflict('电视设置已在其他页面改变，请先核对设置，再开启 XH光流。',snapshot);return;}
+      await api('/api/start','POST',{},knownFingerprint?{'If-Match':knownFingerprint}:{});const applied=await confirmApplied(knownFingerprint);
       feedback(applied.running?'已确认电视使用当前保存的配置，正在同步。':'已应用当前保存的配置；条件不满足时暂停输出，请查看当前状态。');
-    }catch(error){feedback('开启或应用未确认：'+error.message);}
-    finally{command='';setBusy(false);}
+    }catch(error){if(error.status===409)await conflict('电视设置已在其他页面改变，请先核对设置，再开启 XH光流。');else feedback('开启或应用未确认：'+error.message);}
+    finally{command='';setBusy(false);scheduleAutosave();}
   }
   async function stop(){
     if(!online||busy)return;
     command='stopping';setBusy(true);
     try{await api('/api/stop','POST');runtime(await api('/api/status'));feedback('已请求停止同步；WLED 实时输入超时后恢复原状态。');}
     catch(error){feedback('停止未确认：'+error.message);}
-    finally{command='';setBusy(false);}
+    finally{command='';setBusy(false);scheduleAutosave();}
   }
   async function probe(){
-    if(!online||busy)return;
+    if(!online||busy||saving)return;
+    addressEditing=false;cancelAutosave();
     let target;try{target=address($('wledAddress').value);}catch(error){feedback(error.message);return;}
     setBusy(true);$('probeResult').textContent='正在检测 WLED…';
     try{
       const result=await api('/api/probe','POST',{address:target});
       const previous=P.getController().ledCount,next=controller({address:target,name:result.name||'WLED',ledCount:result.ledCount});
-      P.setController(next);$('wledAddress').value=next.address;
+      suppressEdits++;try{P.setController(next);$('wledAddress').value=next.address;}finally{suppressEdits--;}verifiedAddress=next.address;
       $('probeResult').textContent=next.name+' · '+next.ledCount+' 颗灯珠'+(result.version?' · '+result.version:'');
-      feedback(previous!==next.ledCount?'已读取新的灯珠总数，逐边数量保持原值。请重新校准，或点击“按轮廓分配”。':'WLED 连接正常。请按实际安装核对各边灯珠数量，再保存到电视。');
+      feedback(previous!==next.ledCount?'已读取新的灯珠总数，逐边数量保持原值。请重新校准，或点击“按轮廓分配”。':'WLED 连接正常，后续有效调整将自动保存到电视。');
     }catch(error){$('probeResult').textContent='检测未成功：'+error.message;feedback('检测不会改变实际灯光，请核对 WLED 地址。');}
-    finally{setBusy(false);}
+    finally{setBusy(false);edited();}
   }
   function exportFile(){
     try{
@@ -291,23 +386,39 @@
       feedback('已导出完整连接与布局配置。导出不会保存或应用到电视。');
     }catch(error){feedback('无法导出：'+error.message);}
   }
-  $('wledAddress').addEventListener('input',()=>{P.setController({address:$('wledAddress').value.trim()});$('probeResult').textContent='地址已更改，请重新检测连接。';render();});
-  $('brightness').addEventListener('input',()=>{brightnessValue=Number($('brightness').value)/100;render();});$('autoStart').addEventListener('change',render);$('softeningEnabled').addEventListener('change',render);$('blackBarsEnabled').addEventListener('change',render);$('softeningStrength').addEventListener('input',()=>{softeningValue=Number($('softeningStrength').value)/100;render();});
-  for(const key of Object.keys(COLOR_FIELDS))for(const suffix of ['', '-number'])$('color-'+key+suffix).addEventListener('input',event=>{colorValues[key]=event.target.value===''?NaN:Number(event.target.value);render();});
-  $('resetColor').addEventListener('click',()=>{colorValues=colorDefaults();render();feedback('已重置高级颜色校正为默认值；仅修改这组草稿，保存并应用后生效。');});
-  $('sourceOffWhenExcluded').addEventListener('change',event=>{if(!runtimeValues.sourceFilter.enabled){render();return;}runtimeValues.sourceFilter.offWhenExcluded=event.target.checked;render();});
-  $('sleepOff').addEventListener('change',event=>{runtimeValues.sleepOff=event.target.checked;render();});$('sourceFilterEnabled').addEventListener('change',event=>{if(event.target.checked&&!inputsSupported.length){render();return;}runtimeValues.sourceFilter.enabled=event.target.checked;render();});
-  scope.addEventListener('layoutchange',render);
-  $('save').addEventListener('click',save);$('export').addEventListener('click',exportFile);$('probe').addEventListener('click',probe);$('syncSwitch').addEventListener('click',()=>requestedEnabled(lastStatus)===true||lastStatus&&lastStatus.running?stop():start());$('applyChanges').addEventListener('click',start);$('reconnect').addEventListener('click',initialize);
+  $('wledAddress').addEventListener('focus',()=>{addressEditing=true;cancelAutosave();});
+  $('wledAddress').addEventListener('input',()=>{addressEditing=true;suppressEdits++;try{P.setController({address:$('wledAddress').value.trim()});}finally{suppressEdits--;}$('probeResult').textContent='完成地址输入后自动检测并保存。';edited();});
+  function finishAddress(){addressEditing=false;edited();scheduleAutosave();}
+  $('wledAddress').addEventListener('blur',finishAddress);$('wledAddress').addEventListener('change',finishAddress);$('wledAddress').addEventListener('keydown',event=>{if(event.key==='Enter'){finishAddress();}});
+  $('brightness').addEventListener('input',()=>{brightnessValue=$('brightness').value===''?NaN:Number($('brightness').value)/100;edited();});$('autoStart').addEventListener('change',edited);$('softeningEnabled').addEventListener('change',edited);$('blackBarsEnabled').addEventListener('change',edited);$('softeningStrength').addEventListener('input',()=>{softeningValue=Number($('softeningStrength').value)/100;edited();});
+  for(const key of Object.keys(COLOR_FIELDS))for(const suffix of ['', '-number'])$('color-'+key+suffix).addEventListener('input',event=>{colorValues[key]=event.target.value===''?NaN:Number(event.target.value);edited();});
+  $('resetColor').addEventListener('click',()=>{colorValues=colorDefaults();edited();feedback('已重置高级颜色校正，其他设置保持不变；调整将自动保存。');});
+  $('sourceOffWhenExcluded').addEventListener('change',event=>{if(!runtimeValues.sourceFilter.enabled){render();return;}runtimeValues.sourceFilter.offWhenExcluded=event.target.checked;edited();});
+  $('sleepOff').addEventListener('change',event=>{runtimeValues.sleepOff=event.target.checked;edited();});$('sourceFilterEnabled').addEventListener('change',event=>{if(event.target.checked&&!inputsSupported.length){render();return;}runtimeValues.sourceFilter.enabled=event.target.checked;edited();});
+  scope.addEventListener('layoutchange',()=>{render();edited();});
+  $('save').addEventListener('click',()=>{saveError='';return save();});$('export').addEventListener('click',exportFile);$('probe').addEventListener('click',probe);$('syncSwitch').addEventListener('click',()=>requestedEnabled(lastStatus)===true||lastStatus&&lastStatus.running?stop():start());$('applyChanges').addEventListener('click',start);$('reconnect').addEventListener('click',initialize);
+  $('useRemote').addEventListener('click',async()=>{
+    if(busy||saving||!online)return;setBusy(true);
+    try{const snapshot=await editorSnapshot();baseline(snapshot);saveConflict=false;conflictRemote=null;saveError='';hasEdits=false;uncertainWrite=null;if(savedDocument){applyDocument(savedDocument);verifiedAddress=savedDocument.controller.address;}runtime(await api('/api/status'));rememberDraft();feedback('已使用电视当前设置。');}
+    catch(error){feedback('读取电视设置未成功：'+error.message);}finally{setBusy(false);}
+  });
+  $('useLocal').addEventListener('click',async()=>{
+    if(busy||saving||!online)return;
+    try{baseline(await editorSnapshot());saveConflict=false;conflictRemote=null;saveError='';hasEdits=true;await save();}
+    catch(error){feedback('暂未覆盖电视设置：'+error.message);}
+  });
   $('import').addEventListener('click',()=>$('importFile').click());
   $('importFile').addEventListener('change',async event=>{
     const file=event.target.files[0];event.target.value='';if(!file)return;
     if(file.size>4*1024*1024){feedback('JSON 文件超过 4 MB，请选择本工具导出的配置。');return;}
-    try{applyDocument(JSON.parse(await file.text()));render();feedback('已导入为当前草稿。请核对布局并保存到电视；尚未改变灯光。');}
+    try{applyDocument(JSON.parse(await file.text()));observedSignature=null;edited();feedback('已载入完整配置，有效调整将自动保存。');}
     catch(error){feedback('导入失败：'+error.message);}
   });
-  scope.addEventListener('beforeunload',event=>{if(online&&dirty()){event.preventDefault();event.returnValue='';}});
-  scope.TVConsole={getDocument:draft,isDirty:dirty,refresh,initialize,refreshPreview};
-  document.addEventListener('visibilitychange',()=>{renderLivePreview();if(!document.hidden){refresh();refreshPreview();}});
+  document.addEventListener('pointerdown',event=>{const target=event.target;if(target&&target.closest&&(target.closest('#diagram')||target.matches&&target.matches('input[type="range"]'))){gestureActive=true;cancelAutosave();}});
+  function finishGesture(){if(gestureActive){gestureActive=false;scheduleAutosave();}}
+  document.addEventListener('pointerup',finishGesture);document.addEventListener('pointercancel',finishGesture);
+  scope.addEventListener('beforeunload',event=>{if(token&&hasEdits&&dirty()){event.preventDefault();event.returnValue='';}});
+  scope.TVConsole={getDocument:draft,isDirty:dirty,refresh,initialize,refreshPreview,save,getSaveState:()=>({saving,pending:saveTimer!==null,conflict:saveConflict,error:saveError,revision:editRevision})};
+  document.addEventListener('visibilitychange',()=>{rememberDraft();renderLivePreview();if(!document.hidden){refresh();refreshPreview();scheduleAutosave();}});scope.addEventListener('pagehide',rememberDraft);
   initialize();if(token){setInterval(refresh,2000);setInterval(refreshPreview,500);}renderLivePreview();
 })(typeof globalThis!=='undefined'?globalThis:window);

@@ -78,6 +78,6 @@ final class HttpProtocol {
         }
     }
     static String reason(int status){
-        switch(status){case 200:return "OK";case 400:return "Bad Request";case 401:return "Unauthorized";case 403:return "Forbidden";case 404:return "Not Found";case 405:return "Method Not Allowed";case 408:return "Request Timeout";case 411:return "Length Required";case 413:return "Payload Too Large";case 415:return "Unsupported Media Type";case 431:return "Request Header Fields Too Large";case 503:return "Service Unavailable";default:return "Internal Server Error";}
+        switch(status){case 200:return "OK";case 400:return "Bad Request";case 401:return "Unauthorized";case 403:return "Forbidden";case 404:return "Not Found";case 405:return "Method Not Allowed";case 408:return "Request Timeout";case 409:return "Conflict";case 411:return "Length Required";case 413:return "Payload Too Large";case 415:return "Unsupported Media Type";case 431:return "Request Header Fields Too Large";case 503:return "Service Unavailable";default:return "Internal Server Error";}
     }
 }

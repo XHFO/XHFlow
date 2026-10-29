@@ -29,6 +29,8 @@ import java.util.concurrent.TimeUnit;
 /** LAN-only settings server. Never maps request paths onto files. */
 final class ConfigServer implements AutoCloseable {
     static final int PORT=8768;
+    /** Shared with main-thread configuration application and intent-flag writes. */
+    static final Object CONFIG_LOCK=new Object();
     private static final String PREFS="tvwled",TAG="TVWLED_HTTP";
     private static volatile boolean live;
     private static volatile String connection="尚未检测WLED";
@@ -114,12 +116,52 @@ final class ConfigServer implements AutoCloseable {
         if(supported.isEmpty())throw new IllegalArgumentException("尚未取得当前设备的接口列表，不能开启接口筛选");
         for(String id:layout.allowedSources)if(!supported.contains(id))throw new IllegalArgumentException("当前设备不支持接口ID："+id);
     }
+    static String configurationFingerprint(String raw) throws Exception {return raw==null||raw.isEmpty()?"none":ConfigFingerprint.of(raw);}
+    static String expectedFingerprint(HttpProtocol.Request request,boolean required) throws HttpProtocol.Failure {
+        String value=request.headers.get("if-match");
+        if(value==null){if(required)throw new HttpProtocol.Failure(400,"应用设置需要 If-Match 配置指纹");return null;}
+        if(value.length()>=2&&value.startsWith("\"")&&value.endsWith("\""))value=value.substring(1,value.length()-1);
+        if(!value.equals("none")&&!value.matches("[a-f0-9]{64}"))throw new HttpProtocol.Failure(400,"If-Match 配置指纹格式无效");
+        return value;
+    }
+    static void requireFingerprint(String expected,String savedRaw) throws Exception {
+        if(expected!=null&&!expected.equals(configurationFingerprint(savedRaw)))
+            throw new HttpProtocol.Failure(409,"电视配置已被其他页面修改，请重新读取后再保存或应用");
+    }
+    /** The comparison and write are indivisible, even across multiple HTTP worker threads. */
+    static String saveConfiguration(SharedPreferences prefs,LayoutConfig layout,boolean autoStart,String expected) throws Exception {
+        synchronized(CONFIG_LOCK){
+            requireFingerprint(expected,prefs.getString("layout",""));
+            if(!prefs.edit().putString("layout",layout.raw).putBoolean("autoStart",autoStart).commit())throw new IOException("配置未能写入电视");
+            return layout.fingerprint;
+        }
+    }
+    /** The editor must adopt a document and its own fingerprint as one immutable baseline. */
+    static JSONObject editorSnapshot(SharedPreferences prefs) throws Exception {
+        synchronized(CONFIG_LOCK){
+            String raw=prefs.getString("layout","");
+            JSONObject configuration=raw.isEmpty()?null:new JSONObject(raw);
+            return new JSONObject().put("configuration",configuration==null?JSONObject.NULL:configuration)
+                .put("savedConfigFingerprint",configuration==null?"":ConfigFingerprint.of(configuration));
+        }
+    }
     private JSONObject api(HttpProtocol.Request request) throws Exception {
+        // Reading a WLED device is independent I/O; never hold the configuration lock over it.
+        if(request.method.equals("POST")&&request.path.equals("/api/probe")){
+            JSONObject body=new JSONObject(new String(request.body,StandardCharsets.UTF_8));
+            String address=body.getString("address").trim();JSONObject info=WledInfo.read(address);connection=info.getString("name")+" · "+info.getInt("ledCount")+"颗 · WLED "+info.getString("version");
+            return info.put("ok",true).put("address",address);
+        }
+        synchronized(CONFIG_LOCK){return configurationApi(request);}
+    }
+    private JSONObject configurationApi(HttpProtocol.Request request) throws Exception {
         SharedPreferences prefs=context.getSharedPreferences(PREFS,Context.MODE_PRIVATE);
         if(request.method.equals("GET")&&request.path.equals("/api/config")){String raw=prefs.getString("layout","");return raw.isEmpty()?null:new JSONObject(raw);}
+        if(request.method.equals("GET")&&request.path.equals("/api/editor"))return editorSnapshot(prefs);
         if(request.method.equals("GET")&&request.path.equals("/api/preview"))return new JSONObject(AmbientService.preview());
         if(request.method.equals("GET")&&request.path.equals("/api/status")){
-            JSONObject result=new JSONObject(AmbientService.status()).put("enabled",prefs.getBoolean("enabled",false)).put("autoStart",prefs.getBoolean("autoStart",true)).put("serverEnabled",prefs.getBoolean("serverEnabled",false)).put("connection",connection).put("serverUrl",pairingUrl(context));
+            JSONObject result=new JSONObject(AmbientService.status()).put("enabled",prefs.getBoolean("enabled",false)).put("autoStart",prefs.getBoolean("autoStart",true)).put("serverEnabled",prefs.getBoolean("serverEnabled",false)).put("connection",connection).put("serverUrl",pairingUrl(context))
+                .put("supportsConditionalSave",true).put("supportsSafeApply",true).put("supportsEditorSnapshot",true);
             String raw=prefs.getString("layout","");if(!raw.isEmpty()){
                 LayoutConfig layout=new LayoutConfig(raw);result.put("savedAddress",layout.address).put("savedLedCount",layout.ledCount).put("savedConfigFingerprint",layout.fingerprint)
                     .put("pendingApply",!layout.fingerprint.equals(result.optString("appliedConfigFingerprint","")));
@@ -133,20 +175,26 @@ final class ConfigServer implements AutoCloseable {
         String raw=new String(request.body,StandardCharsets.UTF_8);JSONObject body=raw.isEmpty()?new JSONObject():new JSONObject(raw);
         if(request.path.equals("/api/config")){
             LayoutConfig layout=new LayoutConfig(raw);validateSourceFilter(layout,AmbientService.supportedSources());JSONObject preferences=body.optJSONObject("preferences");boolean autoStart=preferences==null?prefs.getBoolean("autoStart",true):preferences.optBoolean("autoStart",true);
-            if(!prefs.edit().putString("layout",layout.raw).putBoolean("autoStart",autoStart).commit())throw new IOException("配置未能写入电视");
-            return new JSONObject().put("ok",true).put("savedConfigFingerprint",layout.fingerprint).put("message","布局已保存到电视；重新开始同步后生效");
+            String fingerprint=saveConfiguration(prefs,layout,autoStart,expectedFingerprint(request,false));
+            return new JSONObject().put("ok",true).put("savedConfigFingerprint",fingerprint).put("message","布局已保存到电视；应用设置或下次开启同步后生效");
         }
         if(request.path.equals("/api/start")){
-            LayoutConfig layout=new LayoutConfig(prefs.getString("layout",""));validateSourceFilter(layout,AmbientService.supportedSources());AmbientService.dispatch(context,AmbientService.ACTION_START);
+            String savedRaw=prefs.getString("layout",""),expected=expectedFingerprint(request,false);requireFingerprint(expected,savedRaw);
+            LayoutConfig layout=new LayoutConfig(savedRaw);validateSourceFilter(layout,AmbientService.supportedSources());
+            if(expected==null)AmbientService.dispatch(context,AmbientService.ACTION_START);else AmbientService.dispatchConfiguration(context,false,expected);
             return new JSONObject().put("ok",true).put("requestedConfigFingerprint",layout.fingerprint).put("message","已请求应用保存配置，请核对已应用指纹与实际输出");
+        }
+        if(request.path.equals("/api/apply")){
+            String savedRaw=prefs.getString("layout",""),expected=expectedFingerprint(request,true);requireFingerprint(expected,savedRaw);
+            LayoutConfig layout=new LayoutConfig(savedRaw);validateSourceFilter(layout,AmbientService.supportedSources());
+            boolean enabled=prefs.getBoolean("enabled",false);
+            if(enabled)AmbientService.dispatchConfiguration(context,true,expected);
+            return new JSONObject().put("ok",true).put("requested",enabled).put("requestedConfigFingerprint",layout.fingerprint)
+                .put("reason",enabled?"":"sync_disabled").put("message",enabled?"已请求应用设置，请核对活动指纹":"设置已保存，同步保持关闭；下次开启时生效");
         }
         if(request.path.equals("/api/stop")){
             AmbientService.dispatch(context,AmbientService.ACTION_PAUSE);
             return new JSONObject().put("ok",true).put("message","已请求停止同步，网页后台继续运行");
-        }
-        if(request.path.equals("/api/probe")){
-            String address=body.getString("address").trim();JSONObject info=WledInfo.read(address);connection=info.getString("name")+" · "+info.getInt("ledCount")+"颗 · WLED "+info.getString("version");
-            return info.put("ok",true).put("address",address);
         }
         throw new HttpProtocol.Failure(404,"Unknown API");
     }

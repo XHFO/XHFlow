@@ -12,7 +12,7 @@ from common import ROOT, BUILD, java_tools, reset_dir, run
 
 JSON_URL = "https://repo.maven.apache.org/maven2/org/json/json/20240303/json-20240303.jar"
 JSON_SHA256 = "3cf6cd6892e32e2b4c1c39e0f52f5248a2f5b37646fdfbb79a66b46b618414ed"
-WEB_TESTS = ("tests.js", "geometry-tests.js", "console-tests.js", "console-api-tests.js")
+WEB_TESTS = ("tests.js", "geometry-tests.js", "console-tests.js", "console-api-tests.js", "autosave-tests.js")
 
 
 def checksum(path):
