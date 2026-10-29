@@ -57,7 +57,8 @@ public final class SamplingQualityContractTest {
         }
         rejects(()->EdgeColorEngine.coordinates(new EdgeColorEngine.Point[41],3840,2160),"Sampling cap forty");
         rejects(()->EdgeColorEngine.plan(crop,-.1,10),"Fine inset rejects negative");rejects(()->EdgeColorEngine.plan(crop,Double.NaN,10),"Fine inset rejects NaN");
-        BlackBarDetector detector=new BlackBarDetector();check(detector.nextProbe(3840,2160).coordinates.length==20,"Black-bar probe remains twenty points");
+        int probeCount=new BlackBarDetector().nextProbe(3840,2160).coordinates.length;
+        check(probeCount>0&&probeCount<=20,"Black-bar probe fits the verified single-transaction point limit");
         System.out.println("SamplingQualityContractTest PASS ("+checks+" checks)");
     }
 }

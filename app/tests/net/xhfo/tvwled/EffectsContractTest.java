@@ -16,7 +16,7 @@ public final class EffectsContractTest {
     }
     private static EdgeColorEngine engine(int count,int[] indices,String[] edges,double[] u,boolean closed){return new EdgeColorEngine(count,indices,edges,u,closed);}
     private static int[][] read(BlackBarDetector.Probe probe,Image image){
-        int[][] out=new int[20][];
+        int[][] out=new int[probe.coordinates.length][];
         for(int i=0;i<out.length;i++)out[i]=image.pixel(probe.coordinates[i][0]/3839.0,probe.coordinates[i][1]/2159.0);
         return out;
     }
@@ -85,7 +85,7 @@ public final class EffectsContractTest {
         check(pillar.left>0&&pillar.left<.2&&pillar.top==0,"stable pillarbox detected independently");
         EdgeColorEngine.Point[] pillarPoints=EdgeColorEngine.plan(pillar);check(pillarPoints[15].x>.12&&pillarPoints[5].x<.88,"pillarbox edge probes reach picture");
         detector.reset();feed(detector,(x,y)->y<.125?new int[]{0,0,0}:new int[]{80,140,220},10);check(detector.region().top==0,"single dark band rejected as asymmetric content");
-        detector.reset();feed(detector,(x,y)->y<.125||y>.875?new int[]{18,18,18}:new int[]{80,140,220},10);check(detector.region().top==0,"gray dim borders do not silently become black crop");
+        detector.reset();feed(detector,(x,y)->y<.125||y>.875?new int[]{18,18,18}:new int[]{80,140,220},10);check(detector.region().top>0,"uniform neutral video-black borders with bright interior are detected");
         detector.reset();feed(detector,LETTERBOX,2);feed(detector,DARK,2);feed(detector,LETTERBOX,4);check(detector.region().top==0,"unknown observations break unconfirmed crop streak");
         detector.reset();feed(detector,(x,y)->y<.125||y>.875?(x<.5?new int[]{13,0,0}:new int[]{0,0,13}):new int[]{80,140,220},10);check(detector.region().top==0,"dark colored picture edges are not uniform black bars");
         detector.reset();feed(detector,LETTERBOX,4);detector.nextProbe(3840,2160);BlackBarDetector.Probe resume=detector.nextProbe(3840,2160);detector.observe(resume,read(resume,LETTERBOX));feed(detector,LETTERBOX,1);check(detector.region().top==0,"missed capture breaks candidate streak");

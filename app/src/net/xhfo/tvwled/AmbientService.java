@@ -554,7 +554,7 @@ public final class AmbientService extends Service {
                     error="";suspendedReason="";state="正在采集并发送 · UDP 无回执";
                 }
                 if(config.blackBarsEnabled&&SystemClock.elapsedRealtime()>=nextBlackBarProbe&&isCurrent()){
-                    nextBlackBarProbe=SystemClock.elapsedRealtime()+2000;
+                    nextBlackBarProbe=SystemClock.elapsedRealtime()+750;
                     long probeStarted=SystemClock.elapsedRealtime();
                     try{
                         BlackBarDetector.Probe probe=blackBars.nextProbe(panelWidth,panelHeight);
