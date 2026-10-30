@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="net.xhfo.tvwled" android:versionCode="10" android:versionName="0.5.0">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="net.xhfo.tvwled" android:versionCode="11" android:versionName="0.5.1">
  <uses-sdk android:minSdkVersion="26" android:targetSdkVersion="34" />
  <uses-permission android:name="android.permission.INTERNET" />
  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -19,6 +19,11 @@
   <service android:name=".GuardService" android:label="XH光流后台守护" android:exported="true" android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
    <intent-filter><action android:name="android.accessibilityservice.AccessibilityService"/></intent-filter>
    <meta-data android:name="android.accessibilityservice" android:resource="@xml/background_guard"/>
+  </service>
+  <service android:name=".RevivalService" android:label="XH光流系统恢复保护" android:exported="true" android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+   <intent-filter><action android:name="android.service.notification.NotificationListenerService"/></intent-filter>
+   <meta-data android:name="android.service.notification.default_filter_types" android:value="@string/revival_no_notification_types"/>
+   <meta-data android:name="android.service.notification.disabled_filter_types" android:value="conversations|alerting|silent|ongoing"/>
   </service>
   <receiver android:name=".RecoveryReceiver" android:exported="false">
    <intent-filter><action android:name="android.intent.action.BOOT_COMPLETED"/><action android:name="android.intent.action.MY_PACKAGE_REPLACED"/></intent-filter>

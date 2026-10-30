@@ -27,6 +27,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.BooleanSupplier;
 
 public final class AmbientService extends Service {
     public static final String ACTION_START="net.xhfo.tvwled.START";
@@ -108,19 +109,27 @@ public final class AmbientService extends Service {
         }
     }
     static void refreshStatus(){AmbientService current=liveInstance;if(current!=null&&!current.destroyed)current.main.post(()->{current.publish();current.updateNotification();});}
+    /** A queued system-binding callback must still own its lease when it reaches the main thread. */
+    static boolean runHostedCommand(SharedPreferences prefs,boolean closing,BooleanSupplier hostAllowed,Runnable activate){
+        synchronized(ConfigServer.CONFIG_LOCK){
+            if(closing||!prefs.getBoolean("serverEnabled",false)||!hostAllowed.getAsBoolean())return false;
+            activate.run();return true;
+        }
+    }
     final class HostBinder extends Binder {
-        void ensureHosted(){main.post(()->{
-            if(destroyed||!preferences().getBoolean("serverEnabled",false)||!GuardService.mayHost(AmbientService.this))return;
-            closing=false;cancelRecovery();recovery="";activateBackend();
+        void ensureHosted(BooleanSupplier hostAllowed){main.post(()->{
+            if(destroyed)return;
+            runHostedCommand(preferences(),closing,hostAllowed,()->{cancelRecovery();recovery="";activateBackend();});
         });}
         boolean isAliveHost(){return !destroyed;}
+        boolean isEstablishedHost(){return !destroyed&&!closing&&serverRunning;}
     }
     public static void idleError(String message){
         try{snapshot=new JSONObject().put("running",false).put("serverRunning",false).put("state",message).toString();}catch(Exception ignored){}
     }
     static boolean mayRecover(Context context){
         SharedPreferences preferences=context.getSharedPreferences(PREFS,MODE_PRIVATE);
-        return preferences.getBoolean("serverEnabled",false)&&preferences.getBoolean("autoStart",true);
+        return RecoveryPolicy.mayRecover(preferences.getBoolean("serverEnabled",false),preferences.getBoolean("autoStart",true));
     }
     private SharedPreferences preferences(){return getSharedPreferences(PREFS,MODE_PRIVATE);}
     private void persistFlags(Boolean enabled,Boolean serverEnabled){
@@ -165,12 +174,13 @@ public final class AmbientService extends Service {
             closing=true;persistFlags(false,false);cancelRecovery();
             closeResources("同步与配置后台均已关闭");
             GuardService.releaseHost();
+            RevivalService.releaseHost();
             publish();stopSelf();
             return START_NOT_STICKY;
         }
         boolean restoring=ACTION_RECOVER.equals(action);
         if(restoring&&!mayRecover(this)){
-            if(!serverRunning&&!GuardService.isConnected())stopSelf();
+            if(!serverRunning&&!GuardService.isConnected()&&!RevivalService.isConnected())stopSelf();
             return START_NOT_STICKY;
         }
         if(!restoring&&!ACTION_CONFIG.equals(action)&&!ACTION_START.equals(action)&&!ACTION_STOP.equals(action))return START_NOT_STICKY;
@@ -186,7 +196,7 @@ public final class AmbientService extends Service {
     /** Hosting is independent of synchronization intent; this never writes enabled. */
     private void prepareBackend(boolean manualBind){
         closing=false;persistFlags(null,true);cancelRecovery();recovery="";
-        if(manualBind)GuardService.requestManualBind(this);
+        if(manualBind){GuardService.requestManualBind(this);RevivalService.requestManualBind(this);}
         ensureForeground();ensureServer();ensureEnvironment();
     }
     private void activateBackend(){ensureForeground();ensureServer();ensureEnvironment();resumeSavedSession();publish();updateNotification();}
@@ -394,7 +404,7 @@ public final class AmbientService extends Service {
         PendingIntent pause=PendingIntent.getService(this,2,new Intent(this,AmbientService.class).setAction(ACTION_STOP),PendingIntent.FLAG_IMMUTABLE|PendingIntent.FLAG_UPDATE_CURRENT);
         String title=syncing?(running?"XH光流 · 正在输出":"XH光流 · 已开启，暂停输出"):"XH光流 · 已关闭";
         String output=syncing?(running?"灯光正在跟随画面":state):"总开关已关闭，网页配置仍可使用";
-        String protection=GuardService.isConnected()?"后台守护已连接":registeredForegroundType()>0?"系统前台服务已登记":"后台保护受限";
+        String protection=RevivalService.isConnected()?"系统恢复保护已连接":GuardService.isConnected()?"后台守护已连接":registeredForegroundType()>0?"系统前台服务已登记":"后台保护受限";
         Notification.Builder builder=new Notification.Builder(this,CHANNEL).setSmallIcon(android.R.drawable.ic_menu_view)
             .setContentTitle(title)
             .setContentText(output+" · "+protection+" · 点此显示配置二维码")
@@ -439,12 +449,14 @@ public final class AmbientService extends Service {
         try{
             Session active=session, details=active==null?lastSession:active;
             int foregroundType=registeredForegroundType();boolean guardConnected=GuardService.isConnected(),guardAuthorized=GuardService.isAuthorized(this);
-            String keepAliveMode=guardConnected?"guard":foregroundType>0?"foreground":"limited";
-            String warning=!serverRunning?"配置后台未运行":guardConnected?"后台守护已连接；整个进程被清理后仍可能需要手动重连":guardAuthorized?"后台守护已授权但未连接，请在电视“后台保活设置”中重新开启守护":foregroundType>0?"系统已登记前台服务；强行停止后仍需手动开启":"当前电视固件未登记前台服务，离开应用后可能停止；可选择手动启用后台守护";
+            boolean revivalConnected=RevivalService.isConnected(),revivalAuthorized=RevivalService.isAuthorized(this);
+            String keepAliveMode=revivalConnected?"revival":guardConnected?"guard":foregroundType>0?"foreground":"limited";
+            String warning=!serverRunning?"配置后台未运行":revivalConnected?(preferences().getBoolean("autoStart",true)?"系统恢复保护已连接；由系统决定进程结束后的重新绑定，不保证手动强行停止后恢复":"系统恢复保护已连接；开机与自动恢复已关闭，仅维持本次手动会话"):revivalAuthorized?"系统恢复保护已授权但尚未连接，当前仍可能被系统结束":guardConnected?"后台守护已连接；整个进程被清理后仍可能需要手动重连":guardAuthorized?"后台守护已授权但未连接，请在电视“后台保活设置”中重新开启守护":foregroundType>0?"系统已登记前台服务；强行停止后仍需手动开启":"当前电视固件未登记前台服务，离开应用后可能停止；可选择手动启用系统恢复保护";
             boolean fresh=active!=null&&active.isCurrent()&&active.valid&&SystemClock.elapsedRealtime()-active.lastValid<=1200;
             JSONObject status=new JSONObject().put("running",fresh&&active.sent.get()>0&&SystemClock.elapsedRealtime()-active.lastSent<=1200).put("serverRunning",serverRunning).put("suspendedReason",suspendedReason)
                 .put("foregroundRegistered",foregroundType>0).put("foregroundStateKnown",foregroundType>=0).put("foregroundType",foregroundType)
                 .put("guardConnected",guardConnected).put("guardAuthorized",guardAuthorized).put("keepAliveMode",keepAliveMode).put("keepAliveWarning",warning).put("foregroundError",foregroundError)
+                .put("revivalAuthorized",revivalAuthorized).put("revivalConnected",revivalConnected)
                 .put("state",state).put("error",error).put("serverError",serverError).put("preferenceError",preferenceError)
                 .put("enabled",preferences().getBoolean("enabled",false))
                 .put("autoStart",preferences().getBoolean("autoStart",true)).put("recovery",recovery);
@@ -495,7 +507,7 @@ public final class AmbientService extends Service {
     }
     private void cancelRecovery(){getSystemService(AlarmManager.class).cancel(recoveryIntent());}
     private void scheduleRecovery(){
-        if(closing||!mayRecover(this)||GuardService.isConnected())return;
+        if(closing||!mayRecover(this))return;
         try{
             // One inexact fallback only; the system may delay or reject background restart.
             getSystemService(AlarmManager.class).set(AlarmManager.ELAPSED_REALTIME_WAKEUP,SystemClock.elapsedRealtime()+15000,recoveryIntent());

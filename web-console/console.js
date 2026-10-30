@@ -250,11 +250,11 @@
     const metrics=[];
     if(status.running){if(Number.isFinite(status.captureMs))metrics.push('采集 '+Number(status.captureMs).toFixed(0)+' ms');if(Number.isFinite(status.samplePoints))metrics.push(status.samplePoints+' 个取色点');}
     $('runtimeMetrics').textContent=metrics.join(' · ');
-    const protection=document.querySelector('.background-protection'),mode=status.keepAliveMode,guard=status.guardConnected===true,foreground=status.foregroundRegistered===true;
-    protection.classList.toggle('is-protected',mode==='guard'&&guard||mode==='foreground'&&foreground);protection.classList.toggle('is-limited',mode==='limited');
-    $('backgroundState').textContent=mode==='guard'?(guard?'辅助守护已连接':'辅助守护尚未连接'):mode==='foreground'?(foreground?'前台保护已注册':'前台保护尚未确认'):mode==='limited'?'后台保护受限':'后台保护状态待确认';
-    const details=(typeof status.guardConnected==='boolean'?(guard?'守护已连接':'守护未连接'):'守护状态未提供')+' · '+(typeof status.foregroundRegistered==='boolean'?(foreground?'前台已注册':'前台未注册'):'前台状态未提供');
-    $('backgroundHint').textContent=mode==='limited'?'请在电视 App 中打开后台保活设置，按页面指引允许后台运行。 '+details:details;
+    const protection=document.querySelector('.background-protection'),mode=status.keepAliveMode,revival=status.revivalConnected===true,guard=status.guardConnected===true,foreground=status.foregroundRegistered===true;
+    protection.classList.toggle('is-protected',mode==='revival'&&revival||mode==='guard'&&guard||mode==='foreground'&&foreground);protection.classList.toggle('is-limited',mode==='limited');
+    $('backgroundState').textContent=mode==='revival'?(revival?'系统恢复保护已连接':'系统恢复保护尚未连接'):mode==='guard'?(guard?'辅助守护已连接':'辅助守护尚未连接'):mode==='foreground'?(foreground?'前台保护已注册':'前台保护尚未确认'):mode==='limited'?'后台保护受限':'后台保护状态待确认';
+    const details=(typeof status.revivalConnected==='boolean'?(revival?'系统恢复已连接':status.revivalAuthorized===true?'系统恢复已授权，尚未连接':'系统恢复未授权')+' · ':'')+(typeof status.guardConnected==='boolean'?(guard?'辅助守护已连接':'辅助守护未连接'):'守护状态未提供')+' · '+(typeof status.foregroundRegistered==='boolean'?(foreground?'前台已注册':'前台未注册'):'前台状态未提供');
+    $('backgroundHint').textContent=mode==='revival'&&revival?(status.autoStart===false?'自动恢复已关闭，仅保护本次手动运行。 ':'系统重新绑定后恢复上次状态；总开关关闭时仅恢复网页后台。 ')+details:mode==='limited'?'请在电视 App 中打开“管理后台守护”，启用系统恢复保护。 '+details:details;
     render();
   }
   async function refresh(){

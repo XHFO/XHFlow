@@ -326,7 +326,11 @@ public final class MainActivity extends Activity {
         }catch(Exception failure){controlPending=false;renderMaster(enabled);permission.setText("总开关操作失败："+failure.getMessage());}
     }
     private void showGuardSettings(){
-        new AlertDialog.Builder(this).setTitle("可选的后台守护").setMessage("部分电视固件会停止普通后台服务。你可以在系统设置中手动启用本应用的后台守护，让 Android 绑定它以托管网页配置和已开启的灯带同步。\n\n这个守护不接收界面事件、不读取窗口内容、不监听按键，不执行手势或系统全局操作。画面取色仍由原厂接口独立完成。\n\n这是可选授权，程序不会代你开启。关闭 XH光流总开关只暂停灯光，网页配置仍可使用；开机恢复在网页中设置。强行停止或系统清理后的恢复由电视系统决定。").setNegativeButton("取消",null).setPositiveButton("前往系统设置",(dialog,which)->{try{startActivity(new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS));}catch(Exception failure){permission.setText("此固件未提供通用辅助功能设置入口，请在系统设置中手动查找。");}}).show();
+        new AlertDialog.Builder(this).setTitle("后台运行保护").setMessage("推荐开启“系统恢复保护”：当电视清理进程后，由 Android 重新绑定本应用，恢复网页后台和上次已开启的灯光同步。\n\n系统将这个授权称为“通知使用权”。本应用仅使用服务绑定，不读取、保存或操作通知，已禁用全部通知类别。若电视没有这个入口，可通过 ADB 授权。原有的辅助功能守护仍可作为补充。\n\n授权可随时在系统设置撤销，程序不会自行重新授权。关闭总开关后，恢复进程也不会重新开启灯光；开机恢复在网页中设置。恢复速度和可用性取决于电视固件。").setNegativeButton("返回",null).setNeutralButton("辅助功能守护",(dialog,which)->openProtectionSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS)).setPositiveButton("系统恢复保护",(dialog,which)->openProtectionSettings(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)).show();
+    }
+    private void openProtectionSettings(String action){
+        try{startActivity(new Intent(action));}
+        catch(Exception failure){permission.setText("此固件未提供该系统设置入口，可通过 ADB 配置系统恢复保护。");}
     }
     @Override public void onRequestPermissionsResult(int code,String[] permissions,int[] grants){super.onRequestPermissionsResult(code,permissions,grants);if(code==21)ensureService();}
     private void renderStatus(){
@@ -342,10 +346,10 @@ public final class MainActivity extends Activity {
             outputStatus.setText("总开关："+(enabled?"开启":"关闭")+" · 灯光输出："+(running?"运行中":enabled?"已暂停":"已停止"));
             boolean interactive=detail.optBoolean("displayInteractive",true);String screen=displayLabel(detail.optString("displayState",interactive?"on":"off"));JSONObject source=detail.optJSONObject("inputSource");String input=source!=null&&source.optBoolean("known",false)?source.optString("label","未识别"):"未识别";displayStatus.setText("显示："+screen+" · 输入："+input);
             String suspended=detail.optString("suspendedReason","");boolean paused=enabled&&!suspended.isEmpty();suspendedStatus.setVisibility(paused?View.VISIBLE:View.GONE);suspendedStatus.setText(paused?"暂停原因："+suspensionLabel(suspended):"");
-            boolean guarded=detail.optBoolean("guardConnected",false),authorized=detail.optBoolean("guardAuthorized",false),registered=detail.optBoolean("foregroundRegistered",false);
-            String protection=guarded?"后台守护已连接":authorized?"后台守护已授权，尚未连接":registered?"系统前台服务已登记":"后台守护尚未授权";
-            String warning=guarded||registered?"强行停止或系统清理后，可能需要手动打开。":authorized?"可进入系统设置，重新开启守护后返回。":"系统可能清理普通后台，可选择手动授权守护。";
-            keepAlive.setText(protection+"\n"+warning);keepAlive.setTextColor(guarded||registered?secondary:warningColor);
+            boolean revival=detail.optBoolean("revivalConnected",false),revivalAuthorized=detail.optBoolean("revivalAuthorized",false),guarded=detail.optBoolean("guardConnected",false),authorized=detail.optBoolean("guardAuthorized",false),registered=detail.optBoolean("foregroundRegistered",false);
+            String protection=revival?"系统恢复保护已连接":revivalAuthorized?"系统恢复保护已授权，尚未连接":guarded?"辅助功能守护已连接":authorized?"辅助功能守护已授权，尚未连接":registered?"系统前台服务已登记":"后台保护尚未授权";
+            String warning=revival?(detail.optBoolean("autoStart",true)?"系统重绑后恢复上次状态；总开关关闭时不恢复灯光。":"自动恢复已关闭，仅保护本次手动运行。"):revivalAuthorized?"等待系统绑定，可在管理后台守护中检查授权。":guarded||registered?"建议再启用系统恢复保护，应对整个进程被清理。":"进入管理后台守护，启用系统恢复保护。";
+            keepAlive.setText(protection+"\n"+warning);keepAlive.setTextColor(revival||guarded||registered?secondary:warningColor);
         }catch(Exception ignored){status.setText(ConfigServer.isLive()?"配置后台已开启":"配置后台尚未开启");keepAlive.setText("后台保护状态暂不可用");}
         scheduleFit();
     }

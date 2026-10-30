@@ -12,6 +12,9 @@ public final class RecoveryReceiver extends BroadcastReceiver {
         String action=intent.getAction();
         if(!Intent.ACTION_BOOT_COMPLETED.equals(action)&&!Intent.ACTION_MY_PACKAGE_REPLACED.equals(action)&&!AmbientService.ACTION_RECOVER.equals(action))return;
         if(!AmbientService.mayRecover(context))return;
+        // An already-approved system binding is independent of background FGS restrictions.
+        // This request never grants access or recreates a removed approval.
+        RevivalService.requestSystemRebind(context);
         try{
             AmbientService.dispatch(context,AmbientService.ACTION_RECOVER);
         }catch(RuntimeException failure){

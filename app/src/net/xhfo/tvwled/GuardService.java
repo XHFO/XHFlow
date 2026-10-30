@@ -19,6 +19,7 @@ public final class GuardService extends AccessibilityService {
     private static volatile boolean manualRequested;
     private volatile boolean systemConnected,binding;
     private boolean bindingDeathRetried;
+    private long hostGeneration;
     private volatile AmbientService.HostBinder host;
     private SharedPreferences preferences;
     private final SharedPreferences.OnSharedPreferenceChangeListener preferenceListener=(prefs,key)->{
@@ -35,7 +36,8 @@ public final class GuardService extends AccessibilityService {
             }
             if(!(binder instanceof AmbientService.HostBinder)){releaseBinding();Log.w("TVWLED_GUARD","Unexpected local host binder");return;}
             host=(AmbientService.HostBinder)binder;
-            host.ensureHosted();AmbientService.refreshStatus();
+            long generation=hostGeneration;
+            host.ensureHosted(()->generation==hostGeneration&&current==GuardService.this&&systemConnected&&binding&&mayHost(GuardService.this)&&isAuthorized(GuardService.this));AmbientService.refreshStatus();
         }
         @Override public void onServiceDisconnected(ComponentName name){host=null;AmbientService.refreshStatus();}
         @Override public void onBindingDied(ComponentName name){
@@ -47,7 +49,9 @@ public final class GuardService extends AccessibilityService {
     static boolean isConnected(){GuardService guard=current;return guard!=null&&guard.systemConnected&&guard.binding&&guard.host!=null&&guard.host.isAliveHost();}
     static boolean mayHost(Context context){
         SharedPreferences prefs=context.getSharedPreferences(AmbientService.PREFS,MODE_PRIVATE);
-        return prefs.getBoolean("serverEnabled",false)&&(prefs.getBoolean("autoStart",true)||manualRequested);
+        GuardService guard=current;
+        AmbientService.HostBinder active=guard==null?null:guard.host;
+        return RecoveryPolicy.mayHost(prefs.getBoolean("serverEnabled",false),prefs.getBoolean("autoStart",true),manualRequested,active!=null&&active.isEstablishedHost());
     }
     static boolean isAuthorized(Context context){
         try{
@@ -97,6 +101,7 @@ public final class GuardService extends AccessibilityService {
         AmbientService.refreshStatus();
     }
     private void releaseBinding(){
+        hostGeneration++;
         host=null;
         if(binding){binding=false;try{unbindService(connection);}catch(IllegalArgumentException ignored){}}
         AmbientService.refreshStatus();
