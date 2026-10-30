@@ -621,7 +621,7 @@ public final class AmbientService extends Service {
         final AtomicLong sent=new AtomicLong();
         volatile boolean active=true, valid;
         volatile long lastValid,lastSent,captureMs,samples,lastPublish;
-        volatile int[] target;
+        volatile LedColorFrame target;
         int[][] coordinates;
         ColorClient colors;
         DatagramSocket socket;
@@ -677,8 +677,7 @@ public final class AmbientService extends Service {
                 EdgeColorEngine.Point[] plan=EdgeColorEngine.plan(region,config.samplingInset,config.pointsPerEdge);
                 int[][] points=EdgeColorEngine.coordinates(plan,panelWidth,panelHeight);
                 int[][] sampled=colors.sample(points);
-                int[] next=engine.map(sampled,correction.isIdentity()?config.brightness:1,config.softeningEnabled,config.softeningStrength);
-                if(!correction.isIdentity())next=correction.apply(next,config.brightness);
+                LedColorFrame next=engine.output(sampled,correction,config.brightness,config.softeningEnabled,config.softeningStrength);
                 JSONObject frame=new JSONObject().put("source","screen-edges").put("panelWidth",panelWidth).put("panelHeight",panelHeight).put("samplingInset",config.samplingInset).put("samplingQuality",config.samplingQuality);
                 frame.put("activeRegion",new JSONObject().put("left",region.left).put("top",region.top).put("right",region.right).put("bottom",region.bottom));
                 JSONArray previewPoints=new JSONArray();
@@ -718,7 +717,7 @@ public final class AmbientService extends Service {
         }
         void send(){
             if(!isCurrent()||!valid||SystemClock.elapsedRealtime()-lastValid>1200)return;
-            int[] goal=target;if(goal==null)return;
+            LedColorFrame goal=target;if(goal==null)return;
             try{
                 int[] rgb=engine.smooth(goal,SystemClock.elapsedRealtime(),config.softeningEnabled,config.softeningStrength);
                 byte[] data=DdpPacket.encode(rgb,sequence);sequence=sequence==15?1:sequence+1;

@@ -92,14 +92,30 @@ final class EdgeColorEngine {
         }
         return out;
     }
+    /** Source black levels are measured before neighbors or calibration can lift them. */
+    LedColorFrame output(int[][] colors,ColorCorrection correction,double brightness,boolean softening,double strength){
+        int[] source=map(colors,1,false,0);
+        int[] corrected=correction.isIdentity()?map(colors,brightness,softening,strength)
+                :correction.apply(softening?map(colors,1,true,strength):source,brightness);
+        return new LedColorFrame(source,corrected,brightness);
+    }
+    synchronized int[] smooth(LedColorFrame frame,long nowMs,boolean enabled,double strength){
+        if(frame==null)throw new IllegalArgumentException("Output frame required");
+        return smooth(frame.goal(),nowMs,enabled,strength,frame);
+    }
     /** Called by one sender; exponential time smoothing remains stable across frame rates. */
     synchronized int[] smooth(int[] goal,long nowMs,boolean enabled,double strength){
+        return smooth(goal,nowMs,enabled,strength,null);
+    }
+    private int[] smooth(int[] goal,long nowMs,boolean enabled,double strength,LedColorFrame frame){
         if(goal==null||goal.length!=ledCount*3)throw new IllegalArgumentException("Invalid output length");
         unit(strength);for(int value:goal)if(value<0||value>255)throw new IllegalArgumentException("Invalid output RGB");
         double dt=hasOutputTime?Math.max(1,Math.min(1000,nowMs-lastOutputMs)):33;
         double alpha=!enabled||strength==0?1:1-Math.exp(-dt/(strength*600));
         int[] out=new int[goal.length];
-        for(int i=0;i<goal.length;i++){previous[i]+=(goal[i]-previous[i])*alpha;out[i]=channel(previous[i]);}
+        for(int i=0;i<goal.length;i++)previous[i]+=(goal[i]-previous[i])*alpha;
+        if(frame!=null)frame.limit(previous);
+        for(int i=0;i<goal.length;i++)out[i]=channel(previous[i]);
         lastOutputMs=nowMs;hasOutputTime=true;return out;
     }
     static void validateColors(int[][] colors,int count){
