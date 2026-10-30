@@ -354,7 +354,7 @@ public final class MainActivity extends Activity {
         scheduleFit();
     }
     private static String displayLabel(String state){switch(state){case "on":case "vr":case "on_suspend":return "亮屏";case "off":return "休眠";case "doze":case "doze_suspend":return "待机";default:return "待确认";}}
-    private static String suspensionLabel(String reason){switch(reason){case "display_sleep":return "显示设备休眠";case "input_unknown":return "当前接口未识别";case "input_not_allowed":return "当前接口未开启同步";case "wled_power_pending":return "正在确认灯带电源";case "wled_power_error":return "灯带电源尚未确认";case "config_invalid":return "请检查已应用的配置";case "capture_error":return "暂时无法读取画面";default:return "正在准备同步";}}
+    private static String suspensionLabel(String reason){switch(reason){case "display_sleep":return "显示设备休眠";case "input_unknown":return "当前接口未识别";case "input_not_allowed":return "当前接口未开启同步";case "wled_power_pending":return "正在确认灯带电源";case "wled_power_error":return "灯带电源尚未确认";case "config_invalid":return "请检查已应用的配置";case "capture_error":return "暂时无法读取画面";case "initialization_retry":return "连接暂不可用，正在自动重连";default:return "正在准备同步";}}
     private void maybeRestoreServer(){if(!ConfigServer.isLive())ensureService();}
     @Override protected void onNewIntent(Intent intent){super.onNewIntent(intent);setIntent(intent);if(permission!=null)maybeRestoreServer();}
     @Override protected void onResume(){super.onResume();visible=true;if(rainbowView!=null)rainbowView.start();if(permission!=null)maybeRestoreServer();refresh.run();scheduleFit();}

@@ -29,7 +29,7 @@
     return {ok:true,message:''};
   }
   function requestedEnabled(status){return status&&typeof status.enabled==='boolean'?status.enabled:null;}
-  const SUSPENSIONS={display_sleep:'显示设备休眠中，已暂停同步。',input_unknown:'当前输入源尚未确认，已暂停同步。',input_not_allowed:'当前输入源不在允许列表，已暂停同步。',wled_power_pending:'正在等待灯带电源状态确认。',wled_power_error:'灯带电源控制未确认，已暂停同步。',config_invalid:'运行配置无效，已暂停同步。',initializing:'正在准备画面采集。',capture_error:'画面采集暂不可用，已暂停同步。'};
+  const SUSPENSIONS={display_sleep:'显示设备休眠中，已暂停同步。',input_unknown:'当前输入源尚未确认，已暂停同步。',input_not_allowed:'当前输入源不在允许列表，已暂停同步。',wled_power_pending:'正在等待灯带电源状态确认。',wled_power_error:'灯带电源控制未确认，已暂停同步。',config_invalid:'运行配置无效，已暂停同步。',initializing:'正在准备画面采集。',capture_error:'画面采集暂不可用，已暂停同步。',initialization_retry:'连接暂不可用，将按当前设置自动重连。'};
   function stable(value){
     if(Array.isArray(value))return '['+value.map(stable).join(',')+']';
     if(value&&typeof value==='object')return '{'+Object.keys(value).sort().map(key=>JSON.stringify(key)+':'+stable(value[key])).join(',')+'}';
@@ -243,7 +243,7 @@
     const state=String(status.state||'');
     const labels={idle:'待开始',starting:'正在启动',running:'正在采集画面并发送灯光',stopped:'已停止同步',error:'同步发生错误'};
     let text=status.running?(labels[state]||'正在采集画面并发送灯光'):(labels[state]||state||'已停止同步');
-    if(status.enabled===true&&!status.running){const reason=String(status.suspendedReason||'');text=SUSPENSIONS[reason]||(reason?'同步已开启，暂停原因：'+reason:'同步已开启，正在等待输出。');}else if(status.enabled===false&&!status.running)text='同步已关闭。';
+    if(status.enabled===true&&!status.running){const reason=String(status.suspendedReason||'');text=reason==='initialization_retry'&&status.state?status.state:SUSPENSIONS[reason]||(reason?'同步已开启，暂停原因：'+reason:'同步已开启，正在等待输出。');}else if(status.enabled===false&&!status.running)text='同步已关闭。';
     if(status.error)text+=' · '+status.error;
     if(status.connection)text+=' · '+status.connection;
     $('runtimeState').textContent=text;

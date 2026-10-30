@@ -51,11 +51,16 @@ public final class AmbientService extends Service {
     private ConfigServer server;
     // Saved configuration is intentionally separate from the currently applied session.
     private volatile LayoutConfig activeConfig;
-    private volatile boolean outputAllowed,sourceOwned;
+    private volatile boolean outputAllowed;
+    private volatile PowerResumeState powerResume=PowerResumeState.empty();
+    private volatile String powerResumeError="";
     private boolean configurationLoaded,initializationFailed,sleepHandled,sourceExcludedHandled;
+    private final InitializationRetryPolicy initializationRetries=new InitializationRetryPolicy();
+    private volatile InitializationRetryPolicy.Ticket initializationRetry;
+    private volatile long initializationRetryAt;
+    private Runnable initializationRetryTask;
     private volatile String suspendedReason="";
     private long configurationGeneration,powerSerial;
-    private volatile String wakeAddress="",restorePowerReason="";
     private String cachedSavedRaw,cachedSavedFingerprint="",fingerprintError="";
     private final Object fingerprintLock=new Object();
     private volatile DisplayEnvironment.Snapshot environment;
@@ -65,7 +70,7 @@ public final class AmbientService extends Service {
     private static final class PowerOperation {
         final LayoutConfig config;final long generation,serial;final boolean on;final String reason;
         volatile WledPowerClient client=new WledPowerClient();
-        volatile boolean pending=true,retrying;volatile int attempt=1;volatile WledPowerClient.Result result;
+        volatile boolean pending=true,retrying;volatile int attempt=1;volatile long retryAt;volatile WledPowerClient.Result result;
         PowerOperation(LayoutConfig config,long generation,long serial,boolean on,String reason){this.config=config;this.generation=generation;this.serial=serial;this.on=on;this.reason=reason;}
     }
     static DisplayEnvironment.Source[] supportedSources(){
@@ -144,6 +149,7 @@ public final class AmbientService extends Service {
     @Override public IBinder onBind(Intent intent){return hostBinder;}
     @Override public void onCreate(){
         super.onCreate();liveInstance=this;
+        powerResume=PowerResumeState.decode(preferences().getString(PowerResumeState.PREF_KEY,""));
         getSystemService(NotificationManager.class).createNotificationChannel(new NotificationChannel(CHANNEL,"XH光流",NotificationManager.IMPORTANCE_LOW));
     }
     @Override public int onStartCommand(Intent intent,int flags,int startId){
@@ -172,6 +178,7 @@ public final class AmbientService extends Service {
         if(destroyed)return START_NOT_STICKY;
         if(ACTION_SHUTDOWN.equals(action)){
             closing=true;persistFlags(false,false);cancelRecovery();
+            savePowerResume(PowerResumeState.empty());
             closeResources("同步与配置后台均已关闭");
             GuardService.releaseHost();
             RevivalService.releaseHost();
@@ -186,7 +193,7 @@ public final class AmbientService extends Service {
         if(!restoring&&!ACTION_CONFIG.equals(action)&&!ACTION_START.equals(action)&&!ACTION_STOP.equals(action))return START_NOT_STICKY;
         prepareBackend(!restoring&&(ACTION_CONFIG.equals(action)||ACTION_START.equals(action)));
         if(ACTION_STOP.equals(action)){
-            persistFlags(false,null);cancelPower();suspendedReason="";stopSession("同步已停止；配置后台继续运行");sourceOwned=false;
+            persistFlags(false,null);cancelPower();suspendedReason="";stopSession("同步已停止；配置后台继续运行");savePowerResume(powerResume.relinquishOutput());
         }else if(ACTION_START.equals(action)){
             persistFlags(true,null);applySavedConfiguration();
         }else resumeSavedSession();
@@ -212,15 +219,15 @@ public final class AmbientService extends Service {
     private void resumeSavedSession(){
         if(preferences().getBoolean("enabled",false)){
             if(!configurationLoaded)applySavedConfiguration();else reconcile();
-        }else if(session==null){suspendedReason="";state="配置后台运行中；同步尚未开启";}
+        }else if(session==null){cancelInitializationRetry();suspendedReason="";state="配置后台运行中；同步尚未开启";}
     }
     private void applySavedConfiguration(){
         configurationGeneration++;configurationLoaded=true;initializationFailed=false;sleepHandled=false;sourceExcludedHandled=false;
-        cancelPower();outputAllowed=false;stopSession("正在读取布局");sourceOwned=false;activeConfig=null;
+        cancelPower();outputAllowed=false;stopSession("正在读取布局");activeConfig=null;
         try{
             LayoutConfig config=new LayoutConfig(preferences().getString("layout",""));
             activeConfig=config;
-            if(!config.address.equals(wakeAddress)){wakeAddress="";restorePowerReason="";}
+            savePowerResume(powerResume.forAddress(config.address));
             error="";reconcile();
         }catch(Exception failure){
             suspendedReason="config_invalid";error="无法开始同步："+failure.getMessage();state="请先通过配置网页保存有效布局";Log.w(TAG,error);
@@ -231,10 +238,10 @@ public final class AmbientService extends Service {
     private void reconcile(){
         if(destroyed||closing)return;
         if(!preferences().getBoolean("enabled",false)){
-            cancelPower();suspendedReason="";if(session!=null)stopSession("同步已停止；配置后台继续运行");return;
+            cancelInitializationRetry();cancelPower();suspendedReason="";if(session!=null)stopSession("同步已停止；配置后台继续运行");return;
         }
         LayoutConfig config=activeConfig;
-        if(config==null){outputAllowed=false;suspendedReason="config_invalid";return;}
+        if(config==null){cancelInitializationRetry();outputAllowed=false;suspendedReason="config_invalid";return;}
         DisplayEnvironment.Snapshot display=environment;
         if(display==null){suspend("initializing","正在确认显示状态");return;}
         String sourceReason=sourceBlockReason(config,display);
@@ -246,11 +253,11 @@ public final class AmbientService extends Service {
         if(display.sleeping){
             initializationFailed=false;suspend("display_sleep","屏幕休眠，已暂停采样和输出");
             if(sourceOffRequested(config,sourceReason)){
-                sourceOwned=false;handleSourceExcludedPower(config);return;
+                if(display.inputKnown)savePowerResume(powerResume.relinquishOutput());handleSourceExcludedPower(config);return;
             }
-            if(config.sourceFilterEnabled&&display.inputKnown&&!sourceEligible(config,display))sourceOwned=false;
+            if(config.sourceFilterEnabled&&display.inputKnown&&!sourceEligible(config,display))savePowerResume(powerResume.relinquishOutput());
             if(config.sleepOff&&sleepPowerEligible(config,display)){
-                if(!sleepHandled){sleepHandled=true;cancelPower();recordPowerOwnership(config,"sleep");requestPower(config,false,"sleep");}
+                if(!sleepHandled&&recordPowerOwnership(config,"sleep")){sleepHandled=true;cancelPower();requestPower(config,false,"sleep");}
                 PowerOperation operation=powerOperation;
                 if(operation!=null&&operation.result!=null&&!operation.result.success){error=operation.result.error;state=operation.pending?"屏幕休眠，正在重试 WLED 关灯":"屏幕休眠，WLED 关灯尚未确认";}
             }else if(powerOperation!=null&&powerOperation.pending)cancelPower();
@@ -258,21 +265,21 @@ public final class AmbientService extends Service {
         }
         if(!display.awake){
             initializationFailed=false;suspend("initializing","显示状态未确认，已暂停输出");
-            if(sourceOffRequested(config,sourceReason)){sourceOwned=false;handleSourceExcludedPower(config);}
+            if(sourceOffRequested(config,sourceReason)){if(display.inputKnown)savePowerResume(powerResume.relinquishOutput());handleSourceExcludedPower(config);}
             else cancelPower();
             return;
         }
         if(!sourceReason.isEmpty()){
             initializationFailed=false;
             String message="input_unknown".equals(sourceReason)?"当前选中接口未知，已暂停输出":"input_not_allowed".equals(sourceReason)?"当前选中接口不在同步范围，已暂停输出":"接口筛选配置无效";
-            suspend(sourceReason,message);sourceOwned=false;
+            suspend(sourceReason,message);if(display.inputKnown)savePowerResume(powerResume.relinquishOutput());
             if(sourceOffRequested(config,sourceReason))handleSourceExcludedPower(config);else cancelPower();
             return;
         }
-        if(config.address.equals(wakeAddress)){
+        if(powerResume.shouldRestore(config.address,true,display.awake,true)){
             PowerOperation operation=powerOperation;
             if(operation==null||!operation.on||operation.config!=config){
-                cancelPower();suspend("wled_power_pending","正在恢复 WLED 并回读电源状态");requestPower(config,true,restorePowerReason);
+                cancelPower();suspend("wled_power_pending","正在恢复 WLED 并回读电源状态");requestPower(config,true,powerResume.restoreReason);
             }else if(operation.pending)suspend("wled_power_pending","正在恢复 WLED 并回读电源状态");
             else if(operation.result!=null&&!operation.result.success){suspend("wled_power_error","WLED 电源尚未确认，已暂停输出");error=operation.result.error;}
             return;
@@ -290,10 +297,33 @@ public final class AmbientService extends Service {
     static boolean sourceOffRequested(LayoutConfig config,String reason){
         return config.sourceFilterEnabled&&config.sourceOffWhenExcluded&&("input_unknown".equals(reason)||"input_not_allowed".equals(reason));
     }
-    private void recordPowerOwnership(LayoutConfig config,String reason){wakeAddress=config.address;restorePowerReason=reason;}
+    /** Main thread only: disk state is durable before an external OFF can be issued. */
+    private boolean savePowerResume(PowerResumeState next){
+        return savePowerResume(next,false);
+    }
+    private boolean savePowerResume(PowerResumeState next,boolean requireDurable){
+        powerResume=next;
+        boolean saved=persistPowerResume(preferences(),next,requireDurable);
+        powerResumeError=saved?"":"灯控恢复状态未能保存，暂不执行自动关灯";
+        return saved;
+    }
+    static boolean persistPowerResume(SharedPreferences prefs,PowerResumeState next,boolean requireDurable){
+        String encoded=next.encode();
+        synchronized(ConfigServer.CONFIG_LOCK){
+            // SharedPreferences updates its memory even if disk commit fails. Before OFF,
+            // an equal in-memory value therefore cannot substitute for a successful commit.
+            if(!requireDurable&&encoded.equals(prefs.getString(PowerResumeState.PREF_KEY,"")))return true;
+            return prefs.edit().putString(PowerResumeState.PREF_KEY,encoded).commit();
+        }
+    }
+    private boolean recordPowerOwnership(LayoutConfig config,String reason){
+        PowerResumeState previous=powerResume;
+        if(savePowerResume(previous.forAddress(config.address).beforeOff(reason),true))return true;
+        powerResume=previous;error=powerResumeError;state="无法保存恢复状态，未执行关灯";return false;
+    }
     private void handleSourceExcludedPower(LayoutConfig config){
-        if(!sourceExcludedHandled){
-            sourceExcludedHandled=true;cancelPower();recordPowerOwnership(config,"source_excluded");requestPower(config,false,"source_excluded");
+        if(!sourceExcludedHandled&&recordPowerOwnership(config,"source_excluded")){
+            sourceExcludedHandled=true;sleepHandled=false;cancelPower();requestPower(config,false,"source_excluded");
         }
         PowerOperation operation=powerOperation;
         if(operation!=null&&"source_excluded".equals(operation.reason)&&!operation.on){
@@ -309,7 +339,7 @@ public final class AmbientService extends Service {
     private boolean sleepPowerEligible(LayoutConfig config,DisplayEnvironment.Snapshot display){
         // Filtering transfers ownership only after actual output. A sleep-time unknown source may
         // retain that ownership; a confirmed different source never does.
-        return !config.sourceFilterEnabled||(sourceOwned&&(!display.inputKnown||sourceEligible(config,display)));
+        return powerResume.maySleepOff(config.address,true,true,true,config.sourceFilterEnabled,display.inputKnown,sourceEligible(config,display));
     }
     private boolean powerIsCurrent(PowerOperation operation){
         if(destroyed||closing||powerOperation!=operation||activeConfig!=operation.config||configurationGeneration!=operation.generation||powerSerial!=operation.serial||!preferences().getBoolean("enabled",false))return false;
@@ -321,7 +351,7 @@ public final class AmbientService extends Service {
             }
             return "sleep".equals(operation.reason)&&operation.config.sleepOff&&display.sleeping&&sleepPowerEligible(operation.config,display);
         }
-        return operation.config.address.equals(wakeAddress)&&display.awake&&sourceEligible(operation.config,display);
+        return powerResume.shouldRestore(operation.config.address,true,display.awake,sourceEligible(operation.config,display));
     }
     private void requestPower(LayoutConfig config,boolean on,String reason){
         if(powerExecutor==null||powerExecutor.isShutdown())return;
@@ -337,17 +367,17 @@ public final class AmbientService extends Service {
             main.post(()->{
                 if(!powerIsCurrent(operation))return;
                 operation.result=result;operation.retrying=false;
-                int maximum=operation.on?3:2;
-                if(!result.success&&operation.attempt<maximum&&powerExecutor!=null&&!powerExecutor.isShutdown()){
+                if(!result.success&&powerExecutor!=null&&!powerExecutor.isShutdown()){
                     operation.retrying=true;operation.pending=true;
-                    long delay=operation.on&&operation.attempt>=2?5:2;
+                    long delay=InitializationRetryPolicy.delayMs(operation.attempt);
+                    operation.retryAt=SystemClock.elapsedRealtime()+delay;
                     powerExecutor.schedule(()->main.post(()->{
                         if(!powerIsCurrent(operation))return;
-                        operation.attempt++;operation.retrying=false;operation.client=new WledPowerClient();executePower(operation);publish();
-                    }),delay,TimeUnit.SECONDS);
+                        operation.attempt=Math.min(1_000_000,operation.attempt+1);operation.retrying=false;operation.retryAt=0;operation.client=new WledPowerClient();executePower(operation);publish();
+                    }),delay,TimeUnit.MILLISECONDS);
                 }else{
                     operation.pending=false;
-                    if(operation.on&&result.success){wakeAddress="";restorePowerReason="";}
+                    if(operation.on&&result.success)savePowerResume(powerResume.afterOnConfirmed());
                 }
                 reconcile();publish();updateNotification();
             });
@@ -425,6 +455,7 @@ public final class AmbientService extends Service {
         updateNotification();
     }
     private void stopSession(String message){
+        cancelInitializationRetry();
         synchronized(lifecycleLock){
             Session previous=session;
             session=null;
@@ -440,11 +471,47 @@ public final class AmbientService extends Service {
             synchronized(lifecycleLock){
                 if(!owner.isCurrent())return;
                 outputAllowed=false;session=null;owner.close();initializationFailed=true;
-                suspendedReason="capture_error";state=message;error=failure.getClass().getSimpleName()+": "+failure.getMessage();publish();
+                suspendedReason="capture_error";state=message;error=failure.getClass().getSimpleName()+": "+failure.getMessage();
+                if(InitializationRetryPolicy.isTransient(failure)&&initializationConditionsAllow(owner.config,owner.generation))scheduleInitializationRetry(owner.config,owner.generation);
+                else cancelInitializationRetry();
+                publish();
             }
             updateNotification();
         });
     }
+    private boolean initializationConditionsAllow(LayoutConfig config,long generation){
+        DisplayEnvironment.Snapshot display=environment;
+        return !destroyed&&!closing&&activeConfig==config&&configurationGeneration==generation&&preferences().getBoolean("enabled",false)
+            &&display!=null&&display.awake&&sourceEligible(config,display);
+    }
+    private boolean initializationRetryIsCurrent(InitializationRetryPolicy.Ticket ticket){
+        DisplayEnvironment.Snapshot display=environment;
+        return initializationRetry==ticket&&initializationRetries.accepts(ticket,activeConfig,configurationGeneration,preferences().getBoolean("enabled",false),
+            display!=null&&display.awake,display!=null&&activeConfig!=null&&sourceEligible(activeConfig,display),destroyed||closing);
+    }
+    private void scheduleInitializationRetry(LayoutConfig config,long generation){
+        if(initializationRetryTask!=null)main.removeCallbacks(initializationRetryTask);
+        final InitializationRetryPolicy.Ticket ticket=initializationRetries.failed(config,generation);
+        initializationRetry=ticket;initializationRetryAt=SystemClock.elapsedRealtime()+ticket.delayMs;
+        suspendedReason="initialization_retry";state="连接暂不可用，等待自动重试";
+        initializationRetryTask=()->{
+            if(initializationRetry!=ticket)return;
+            if(!initializationRetryIsCurrent(ticket)){cancelInitializationRetry();return;}
+            initializationRetryTask=null;initializationRetry=null;initializationRetryAt=0;initializationFailed=false;
+            // Reconcile every display/source/power gate again, using the same applied object.
+            reconcile();publish();updateNotification();
+        };
+        main.postDelayed(initializationRetryTask,ticket.delayMs);
+        Log.i(TAG,"Temporary initialization failure; retry "+ticket.attempt+" in "+ticket.delayMs+"ms");
+    }
+    private void cancelInitializationRetry(){
+        if(initializationRetryTask!=null)main.removeCallbacks(initializationRetryTask);
+        initializationRetryTask=null;initializationRetry=null;initializationRetryAt=0;initializationRetries.cancel();
+    }
+    private void initialized(Session owner){main.post(()->{
+        if(!owner.isCurrent())return;
+        cancelInitializationRetry();initializationFailed=false;publish();updateNotification();
+    });}
     private void publish(){
         try{
             Session active=session, details=active==null?lastSession:active;
@@ -453,11 +520,15 @@ public final class AmbientService extends Service {
             String keepAliveMode=revivalConnected?"revival":guardConnected?"guard":foregroundType>0?"foreground":"limited";
             String warning=!serverRunning?"配置后台未运行":revivalConnected?(preferences().getBoolean("autoStart",true)?"系统恢复保护已连接；由系统决定进程结束后的重新绑定，不保证手动强行停止后恢复":"系统恢复保护已连接；开机与自动恢复已关闭，仅维持本次手动会话"):revivalAuthorized?"系统恢复保护已授权但尚未连接，当前仍可能被系统结束":guardConnected?"后台守护已连接；整个进程被清理后仍可能需要手动重连":guardAuthorized?"后台守护已授权但未连接，请在电视“后台保活设置”中重新开启守护":foregroundType>0?"系统已登记前台服务；强行停止后仍需手动开启":"当前电视固件未登记前台服务，离开应用后可能停止；可选择手动启用系统恢复保护";
             boolean fresh=active!=null&&active.isCurrent()&&active.valid&&SystemClock.elapsedRealtime()-active.lastValid<=1200;
+            InitializationRetryPolicy.Ticket retry=initializationRetry;
+            long retryInMs=retry==null?0:Math.max(0,initializationRetryAt-SystemClock.elapsedRealtime());
+            String visibleState=retry==null?state:"连接暂不可用，"+Math.max(1,(retryInMs+999)/1000)+" 秒后自动重试";
             JSONObject status=new JSONObject().put("running",fresh&&active.sent.get()>0&&SystemClock.elapsedRealtime()-active.lastSent<=1200).put("serverRunning",serverRunning).put("suspendedReason",suspendedReason)
                 .put("foregroundRegistered",foregroundType>0).put("foregroundStateKnown",foregroundType>=0).put("foregroundType",foregroundType)
                 .put("guardConnected",guardConnected).put("guardAuthorized",guardAuthorized).put("keepAliveMode",keepAliveMode).put("keepAliveWarning",warning).put("foregroundError",foregroundError)
                 .put("revivalAuthorized",revivalAuthorized).put("revivalConnected",revivalConnected)
-                .put("state",state).put("error",error).put("serverError",serverError).put("preferenceError",preferenceError)
+                .put("state",visibleState).put("error",error).put("serverError",serverError).put("preferenceError",preferenceError).put("powerResumeError",powerResumeError)
+                .put("initializationRetry",retry==null?JSONObject.NULL:new JSONObject().put("attempt",retry.attempt).put("retryInMs",retryInMs).put("delayMs",retry.delayMs))
                 .put("enabled",preferences().getBoolean("enabled",false))
                 .put("autoStart",preferences().getBoolean("autoStart",true)).put("recovery",recovery);
             DisplayEnvironment.Snapshot display=environment;JSONArray supported=new JSONArray();
@@ -471,7 +542,7 @@ public final class AmbientService extends Service {
             else{
                 WledPowerClient.Result result=operation.result;
                 status.put("wledPower",new JSONObject().put("address",operation.config.address).put("requestedOn",operation.on).put("reason",operation.reason).put("pending",operation.pending)
-                    .put("attempt",operation.attempt).put("maxAttempts",operation.on?3:2).put("retrying",operation.retrying).put("success",result!=null&&result.success).put("readbackOn",result==null||result.readbackOn==null?JSONObject.NULL:result.readbackOn)
+                    .put("attempt",operation.attempt).put("maxAttempts",JSONObject.NULL).put("retrying",operation.retrying).put("retryInMs",operation.retrying?Math.max(0,operation.retryAt-SystemClock.elapsedRealtime()):0).put("success",result!=null&&result.success).put("readbackOn",result==null||result.readbackOn==null?JSONObject.NULL:result.readbackOn)
                     .put("readbackLive",result==null||result.readbackLive==null?JSONObject.NULL:result.readbackLive).put("error",result==null?"":result.error).put("durationMs",result==null?0:result.durationMs));
             }
             LayoutConfig applied=activeConfig;
@@ -517,12 +588,12 @@ public final class AmbientService extends Service {
     }
     @Override public void onTaskRemoved(Intent rootIntent){scheduleRecovery();super.onTaskRemoved(rootIntent);}
     private void closeResources(String message){
-        configurationGeneration++;cancelPower();outputAllowed=false;
+        configurationGeneration++;cancelInitializationRetry();cancelPower();outputAllowed=false;
         if(environmentMonitor!=null)environmentMonitor.close();environmentMonitor=null;environment=null;
         if(powerExecutor!=null)powerExecutor.shutdownNow();powerExecutor=null;
-        activeConfig=null;configurationLoaded=false;wakeAddress="";restorePowerReason="";suspendedReason="";sourceExcludedHandled=false;sleepHandled=false;
+        activeConfig=null;configurationLoaded=false;suspendedReason="";sourceExcludedHandled=false;sleepHandled=false;
         synchronized(lifecycleLock){
-            Session previous=session;session=null;if(previous!=null)previous.close();sourceOwned=false;
+            Session previous=session;session=null;if(previous!=null)previous.close();
             if(server!=null)server.close();server=null;serverRunning=false;
         }
         state=message;
@@ -544,6 +615,7 @@ public final class AmbientService extends Service {
     }
     private final class Session {
         final LayoutConfig config;
+        final long generation;
         final ScheduledExecutorService sampler=Executors.newSingleThreadScheduledExecutor(r->new Thread(r,"TVWLED-color"));
         final ScheduledExecutorService sender=Executors.newSingleThreadScheduledExecutor(r->new Thread(r,"TVWLED-ddp"));
         final AtomicLong sent=new AtomicLong();
@@ -563,8 +635,9 @@ public final class AmbientService extends Service {
         volatile String blackBarError="";
         volatile PreviewFrame previewFrame;
         int sequence=1;
-        Session(LayoutConfig layout){config=layout;}
-        boolean isCurrent(){return active&&outputAllowed&&session==this&&activeConfig==config&&!destroyed&&!closing;}
+        boolean ownershipNoted;
+        Session(LayoutConfig layout){config=layout;generation=configurationGeneration;}
+        boolean isCurrent(){return active&&outputAllowed&&session==this&&activeConfig==config&&configurationGeneration==generation&&!destroyed&&!closing;}
         void close(){active=false;valid=false;sampler.shutdownNow();sender.shutdownNow();if(socket!=null)socket.close();}
         void initialize(){
             try{
@@ -584,6 +657,7 @@ public final class AmbientService extends Service {
                     if(!isCurrent())return;
                     colors=client;coordinates=points;address=resolved;socket=new DatagramSocket();
                     panelWidth=size[0];panelHeight=size[1];engine=nextEngine;correction=nextCorrection;blackBars=nextDetector;
+                    initialized(this);
                     state="等待屏幕取色";publish();
                     Log.i(TAG,"sync uid="+android.os.Process.myUid()+" panel="+size[0]+"x"+size[1]+" points="+coordinates.length+" leds="+config.ledCount);
                     sampler.schedule(this::sample,0,TimeUnit.MILLISECONDS);
@@ -650,7 +724,8 @@ public final class AmbientService extends Service {
                 byte[] data=DdpPacket.encode(rgb,sequence);sequence=sequence==15?1:sequence+1;
                 synchronized(lifecycleLock){
                     if(!isCurrent()||!valid||SystemClock.elapsedRealtime()-lastValid>1200)return;
-                    socket.send(new DatagramPacket(data,data.length,address,DdpPacket.PORT));sent.incrementAndGet();lastSent=SystemClock.elapsedRealtime();sourceOwned=true;
+                    socket.send(new DatagramPacket(data,data.length,address,DdpPacket.PORT));sent.incrementAndGet();lastSent=SystemClock.elapsedRealtime();
+                    if(!ownershipNoted){ownershipNoted=true;main.post(()->{if(isCurrent())savePowerResume(powerResume.forAddress(config.address).afterOutput());});}
                     if(SystemClock.elapsedRealtime()-lastPublish>1000)publish();
                 }
             }catch(Exception failure){
