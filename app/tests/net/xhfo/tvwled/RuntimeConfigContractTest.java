@@ -20,6 +20,30 @@ public final class RuntimeConfigContractTest {
         LayoutConfig defaults=new LayoutConfig(base().toString());
         check(defaults.sleepOff&&!defaults.sourceFilterEnabled&&!defaults.sourceOffWhenExcluded&&defaults.allowedSources.length==0,"safe backward-compatible runtime defaults");
         check(defaults.fingerprint.matches("[0-9a-f]{64}"),"layout exposes canonical saved/applied fingerprint");
+        check(defaults.blackFilterEnabled&&defaults.blackFilterThreshold==.15,"old config enables the default sparse black filter");
+        check(!new JSONObject(defaults.raw).has("output"),"implicit black filter defaults never rewrite stored legacy JSON");
+        JSONObject blackBase=base().put("output",new JSONObject().put("blackFilter",new JSONObject().put("enabled",false).put("threshold",.27).put("futureFilter","keep")));
+        LayoutConfig blackConfigured=new LayoutConfig(blackBase.toString());
+        check(!blackConfigured.blackFilterEnabled&&blackConfigured.blackFilterThreshold==.27,"explicit black filter off retains its threshold");
+        check(new JSONObject(blackConfigured.raw).getJSONObject("output").getJSONObject("blackFilter").getString("futureFilter").equals("keep"),"black filter preserves extension fields");
+        check(!blackConfigured.fingerprint.equals(defaults.fingerprint),"black filter settings affect saved and active fingerprints");
+        for(double threshold:new double[]{.01,.5,.123456789}){
+            LayoutConfig blackRange=new LayoutConfig(base().put("output",new JSONObject().put("blackFilter",new JSONObject().put("threshold",threshold))).toString());
+            check(blackRange.blackFilterEnabled&&blackRange.blackFilterThreshold==threshold,"black filter threshold range and precision preserved");
+        }
+        for(Object invalid:new Object[]{JSONObject.NULL,false,1,"filter",new JSONArray()}){
+            final Object value=invalid;
+            rejects(()->new LayoutConfig(base().put("output",new JSONObject().put("blackFilter",value)).toString()),"black filter requires an object");
+        }
+        for(Object invalid:new Object[]{JSONObject.NULL,1,"true"}){
+            final Object value=invalid;
+            rejects(()->new LayoutConfig(base().put("output",new JSONObject().put("blackFilter",new JSONObject().put("enabled",value))).toString()),"black filter flag requires a boolean");
+        }
+        for(Object invalid:new Object[]{JSONObject.NULL,true,"0.15",0,.009,.501,1,-.1}){
+            final Object value=invalid;
+            rejects(()->new LayoutConfig(base().put("output",new JSONObject().put("blackFilter",new JSONObject().put("enabled",false).put("threshold",value))).toString()),"black threshold invalid values rejected even when disabled");
+        }
+
         check(defaults.pointsPerEdge==5&&defaults.samplingQuality.equals("standard"),"old config uses standard sampling");
         JSONObject fine=base().put("layout",new JSONObject().put("geometry",new JSONObject().put("kept",123)).put("sampling",new JSONObject().put("inset",.123).put("quality","fine")));
         LayoutConfig detail=new LayoutConfig(fine.toString());check(detail.pointsPerEdge==10&&detail.samplingInset==.123,"fine and inset applied together");

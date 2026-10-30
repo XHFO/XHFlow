@@ -677,9 +677,10 @@ public final class AmbientService extends Service {
                 EdgeColorEngine.Point[] plan=EdgeColorEngine.plan(region,config.samplingInset,config.pointsPerEdge);
                 int[][] points=EdgeColorEngine.coordinates(plan,panelWidth,panelHeight);
                 int[][] sampled=colors.sample(points);
-                LedColorFrame next=engine.output(sampled,correction,config.brightness,config.softeningEnabled,config.softeningStrength);
+                LedColorFrame next=engine.output(sampled,correction,config.brightness,config.softeningEnabled,config.softeningStrength,config.blackFilterEnabled,config.blackFilterThreshold);
                 JSONObject frame=new JSONObject().put("source","screen-edges").put("panelWidth",panelWidth).put("panelHeight",panelHeight).put("samplingInset",config.samplingInset).put("samplingQuality",config.samplingQuality);
                 frame.put("activeRegion",new JSONObject().put("left",region.left).put("top",region.top).put("right",region.right).put("bottom",region.bottom));
+                frame.put("blackFilter",new JSONObject().put("enabled",config.blackFilterEnabled).put("threshold",config.blackFilterThreshold).put("blackRatio",next.blackRatio).put("filledLeds",next.filledLeds));
                 JSONArray previewPoints=new JSONArray();
                 for(int i=0;i<plan.length;i++)previewPoints.put(new JSONObject().put("edge",plan[i].edge).put("position",plan[i].position).put("x",(double)points[i][0]/(panelWidth-1)).put("y",(double)points[i][1]/(panelHeight-1)).put("color",String.format(java.util.Locale.ROOT,"#%02x%02x%02x",sampled[i][0],sampled[i][1],sampled[i][2])));
                 frame.put("points",previewPoints);

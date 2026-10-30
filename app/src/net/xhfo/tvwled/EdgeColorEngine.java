@@ -94,10 +94,33 @@ final class EdgeColorEngine {
     }
     /** Source black levels are measured before neighbors or calibration can lift them. */
     LedColorFrame output(int[][] colors,ColorCorrection correction,double brightness,boolean softening,double strength){
+        return output(colors,correction,brightness,softening,strength,false,.15);
+    }
+    LedColorFrame output(int[][] colors,ColorCorrection correction,double brightness,boolean softening,double strength,
+                         boolean blackFilterEnabled,double blackFilterThreshold){
         int[] source=map(colors,1,false,0);
-        int[] corrected=correction.isIdentity()?map(colors,brightness,softening,strength)
-                :correction.apply(softening?map(colors,1,true,strength):source,brightness);
-        return new LedColorFrame(source,corrected,brightness);
+        SparseBlackFilter.Result filtered=SparseBlackFilter.apply(source,indices,closed,blackFilterEnabled,blackFilterThreshold);
+        int[] corrected;
+        if(filtered.filledLeds==0){
+            corrected=correction.isIdentity()?map(colors,brightness,softening,strength)
+                    :correction.apply(softening?map(colors,1,true,strength):source,brightness);
+        }else{
+            int[] mapped=blurMapped(filtered.colors,correction.isIdentity()?brightness:1,softening,strength);
+            corrected=correction.isIdentity()?mapped:correction.apply(mapped,brightness);
+        }
+        return new LedColorFrame(filtered.colors,corrected,brightness,filtered.blackRatio,filtered.filledLeds);
+    }
+    private int[] blurMapped(int[] rgb,double gain,boolean softening,double strength){
+        unit(gain);unit(strength);int[] out=new int[rgb.length];double blur=softening?strength:0;
+        for(int i=0;i<indices.length;i++){
+            int before=i==0?(closed?indices.length-1:0):i-1;
+            int after=i==indices.length-1?(closed?0:i):i+1;
+            for(int c=0;c<3;c++){
+                double own=rgb[indices[i]*3+c],near=.25*rgb[indices[before]*3+c]+.5*own+.25*rgb[indices[after]*3+c];
+                out[indices[i]*3+c]=channel((own*(1-blur)+near*blur)*gain);
+            }
+        }
+        return out;
     }
     synchronized int[] smooth(LedColorFrame frame,long nowMs,boolean enabled,double strength){
         if(frame==null)throw new IllegalArgumentException("Output frame required");

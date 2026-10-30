@@ -5,11 +5,17 @@ final class LedColorFrame {
     private static final double BLACK=24, FULL_COLOR=40;
     private final int[] goal;
     private final double[] limits;
+    final double blackRatio;
+    final int filledLeds;
 
     LedColorFrame(int[] source,int[] corrected,double brightness){
+        this(source,corrected,brightness,0,0);
+    }
+    LedColorFrame(int[] source,int[] corrected,double brightness,double blackRatio,int filledLeds){
         if(source==null||corrected==null||source.length!=corrected.length||source.length%3!=0
                 ||!Double.isFinite(brightness)||brightness<0||brightness>1)
             throw new IllegalArgumentException("Invalid protected output frame");
+        this.blackRatio=blackRatio;this.filledLeds=filledLeds;
         goal=corrected.clone();limits=new double[source.length/3];
         for(int i=0;i<limits.length;i++){
             int base=i*3,peak=0;

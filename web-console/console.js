@@ -7,6 +7,13 @@
     if(raw===undefined)raw={};if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('颜色校正配置格式无效。');
     const out={...raw};for(const [key,field]of Object.entries(COLOR_FIELDS)){const value=raw[key]===undefined?field.default:raw[key];if(typeof value!=='number'||!Number.isFinite(value)||value<field.min||value>field.max)throw new Error(field.label+'必须在 '+field.min+'–'+field.max+' 之间。');out[key]=value;}return out;
   }
+  function normalizeBlackFilter(raw){
+    if(raw===undefined)raw={};if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('零散黑点过滤配置格式无效。');
+    const enabled=raw.enabled===undefined?true:raw.enabled,threshold=raw.threshold===undefined?.15:raw.threshold;
+    if(typeof enabled!=='boolean')throw new Error('零散黑点过滤选项必须为 true 或 false。');
+    if(typeof threshold!=='number'||!Number.isFinite(threshold)||threshold<.01||threshold>.5)throw new Error('黑点占比阈值必须在 1%–50% 之间。');
+    return {...raw,enabled,threshold};
+  }
   function runtimeDefaults(){return {sleepOff:true,sourceFilter:{enabled:false,allowed:[],offWhenExcluded:false}};}
   function normalizeRuntime(raw){
     if(raw===undefined)raw={};if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('运行条件配置格式无效。');
@@ -63,7 +70,7 @@
     const autoStart=raw.preferences&&raw.preferences.autoStart!==undefined?raw.preferences.autoStart:true;
     if(typeof autoStart!=='boolean')throw new Error('自动恢复同步选项必须为 true 或 false。');
     const out=M.exportLayout(layout,device.ledCount);
-    out.controller=device;out.output={...M.clone(rawOutput),brightness,softening:{...M.clone(rawSoftening),enabled:softeningEnabled,strength:softeningStrength},blackBars:{...M.clone(rawBlackBars),enabled:blackBarsEnabled},color:normalizeColor(rawOutput.color)};out.preferences={...M.clone(raw.preferences||{}),autoStart};out.runtime=normalizeRuntime(raw.runtime);
+    out.controller=device;out.output={...M.clone(rawOutput),brightness,softening:{...M.clone(rawSoftening),enabled:softeningEnabled,strength:softeningStrength},blackBars:{...M.clone(rawBlackBars),enabled:blackBarsEnabled},blackFilter:normalizeBlackFilter(rawOutput.blackFilter),color:normalizeColor(rawOutput.color)};out.preferences={...M.clone(raw.preferences||{}),autoStart};out.runtime=normalizeRuntime(raw.runtime);
     return out;
   }
   function normalizePreview(raw){
@@ -81,13 +88,13 @@
     return {available:points.length>0,ageMs:raw.ageMs,panelWidth:raw.panelWidth,panelHeight:raw.panelHeight,activeRegion:{...region},points,source:'screen-edges'};
   }
   function previewFresh(value,receivedAt,now,online,running,hidden){return !!(value&&value.available&&online&&running&&!hidden&&value.ageMs+Math.max(0,now-receivedAt)<=1500);}
-  const model={stable,address,controller,normalize,normalizeColor,colorDefaults,COLOR_FIELDS,normalizeRuntime,runtimeDefaults,confirmedInputs,conditionReady,requestedEnabled,normalizePreview,previewFresh};scope.TVConsoleModel=model;
+  const model={stable,address,controller,normalize,normalizeColor,colorDefaults,COLOR_FIELDS,normalizeBlackFilter,normalizeRuntime,runtimeDefaults,confirmedInputs,conditionReady,requestedEnabled,normalizePreview,previewFresh};scope.TVConsoleModel=model;
   if(typeof module!=='undefined'&&module.exports)module.exports=model;
   if(typeof document==='undefined')return;
 
   const $=id=>document.getElementById(id),P=scope.LayoutPreview,M=scope.LayoutModel;
   const token=new URLSearchParams(location.search).get('token')||'';
-  let online=false,busy=false,initializing=false,savedSignature=null,savedDocument=null,pendingApply=false,lastStatus=null,polling=false,initialized=false,brightnessValue=.6,softeningValue=.35,colorValues=colorDefaults(),runtimeValues=runtimeDefaults(),inputsSupported=[],sourceOptionsKey='',outputExtras={},preferenceExtras={},command='',previewValue=null,previewReceivedAt=0,previewBusy=false,previewError='';
+  let online=false,busy=false,initializing=false,savedSignature=null,savedDocument=null,pendingApply=false,lastStatus=null,polling=false,initialized=false,brightnessValue=.6,softeningValue=.35,blackFilterValue=.15,colorValues=colorDefaults(),runtimeValues=runtimeDefaults(),inputsSupported=[],sourceOptionsKey='',outputExtras={},preferenceExtras={},command='',previewValue=null,previewReceivedAt=0,previewBusy=false,previewError='';
   const AUTOSAVE_DELAY=650,CACHE_KEY='xhflow.editor-draft.v1';
   let saving=false,saveTimer=null,savePhase='',saveError='',saveConflict=false,conflictRemote=null,knownFingerprint='',hasBaseline=false,hasEdits=false,editRevision=0,suppressEdits=0,observedSignature=null,gestureActive=false,addressEditing=false,uncertainWrite=null,verifiedAddress='',cacheError=false;
   function cachedDraft(){try{const value=JSON.parse(scope.localStorage.getItem(CACHE_KEY)||'null');return value&&value.version===1?value:null;}catch(error){return null;}}
@@ -113,7 +120,7 @@
     feedback(message||'电视配置已在其他页面更改。本页调整已保留，请选择要使用的设置。');render();rememberDraft();
   }
   function feedback(text){$('consoleFeedback').textContent=text;}
-  function draft(){const value=P.getMapping();value.controller.address=address($('wledAddress').value);value.output={...M.clone(outputExtras),brightness:brightnessValue,softening:{...(outputExtras.softening||{}),enabled:$('softeningEnabled').checked,strength:softeningValue},blackBars:{...(outputExtras.blackBars||{}),enabled:$('blackBarsEnabled').checked},color:{...(outputExtras.color||{}),...colorValues}};value.preferences={...M.clone(preferenceExtras),autoStart:$('autoStart').checked};value.runtime=M.clone(runtimeValues);return normalize(value,M);}
+  function draft(){const value=P.getMapping();value.controller.address=address($('wledAddress').value);value.output={...M.clone(outputExtras),brightness:brightnessValue,softening:{...(outputExtras.softening||{}),enabled:$('softeningEnabled').checked,strength:softeningValue},blackBars:{...(outputExtras.blackBars||{}),enabled:$('blackBarsEnabled').checked},blackFilter:{...(outputExtras.blackFilter||{}),enabled:$('blackFilterEnabled').checked,threshold:blackFilterValue},color:{...(outputExtras.color||{}),...colorValues}};value.preferences={...M.clone(preferenceExtras),autoStart:$('autoStart').checked};value.runtime=M.clone(runtimeValues);return normalize(value,M);}
   function inspection(){try{const value=draft();return {valid:true,value,signature:stable(value)};}catch(error){return {valid:false,error:error.message,signature:null};}}
   function dirty(){const current=inspection();return saveConflict||!current.valid||current.signature!==savedSignature;}
   function render(){
@@ -131,13 +138,14 @@
     $('pendingApplyNotice').hidden=!online||!pendingApply;$('pendingApplyNotice').textContent=requested===true?'电视中有已保存但尚未应用的设置。'+(changed?'本页调整将自动保存并应用。':'可重试应用已保存的设置。'):'已保存的设置将在下次开启同步时生效。';
     $('saveHint').textContent=cacheError&&(!token||!online)?'浏览器暂不能保留本页调整，请保持页面打开或导出配置。':!token?'演示中的有效配置自动保存在此浏览器，不会控制真实灯带。':saveConflict?'本页与电视设置不一致，自动保存已暂停。':saveError?saveError:!current.valid?'请补全输入；电视继续使用上次有效设置。':!conditions.ok?conditions.message:requested===true?'调整停下后自动保存并应用；连续拖动时不会中断编辑。':'调整自动保存到电视；总开关关闭时保持关闭。';
     $('probe').disabled=!online||busy;$('reconnect').disabled=busy;
-    for(const id of ['wledAddress','brightness','autoStart','softeningEnabled','softeningStrength','blackBarsEnabled'])$(id).disabled=busy;
+    for(const id of ['wledAddress','brightness','autoStart','softeningEnabled','softeningStrength','blackBarsEnabled','blackFilterEnabled','blackFilterThreshold'])$(id).disabled=busy;
     for(const key of Object.keys(COLOR_FIELDS)){for(const suffix of ['', '-number']){const node=$('color-'+key+suffix);node.disabled=busy;if(document.activeElement!==node&&Number.isFinite(colorValues[key]))node.value=String(colorValues[key]);}}$('resetColor').disabled=busy;
     try{normalizeColor(colorValues);$('colorValidation').textContent='';}catch(error){$('colorValidation').textContent=error.message;}
     renderConditions();
     document.querySelector('.workspace').inert=busy||(initializing&&!initialized);
     $('brightnessOutput').textContent=Number((brightnessValue*100).toFixed(2))+'%';
     $('softeningOutput').textContent=Number((softeningValue*100).toFixed(2))+'%';$('softeningStrength').disabled=busy||!$('softeningEnabled').checked;
+    $('blackFilterOutput').textContent=Number((blackFilterValue*100).toFixed(2))+'%';$('blackFilterThreshold').disabled=busy||!$('blackFilterEnabled').checked;
     const saveState=$('saveState');saveState.className='save-state '+(saveConflict||saveError||cacheError?'is-error':!token&&current.valid?'is-saved':changed?'is-dirty':'is-saved');
     if(saveConflict)saveState.textContent='设置冲突 · 等待选择';
     else if(saving)saveState.textContent=savePhase==='applying'?'正在应用…':'正在自动保存…';
@@ -207,7 +215,7 @@
     // Validate the complete document before mutating any visible control.
     suppressEdits++;try{P.setController(normalized.controller);P.setConfig(normalized.layout);}finally{suppressEdits--;}
     $('wledAddress').value=normalized.controller.address;brightnessValue=normalized.output.brightness;$('brightness').value=String(brightnessValue*100);$('autoStart').checked=normalized.preferences.autoStart;
-    outputExtras=M.clone(normalized.output);preferenceExtras=M.clone(normalized.preferences);softeningValue=normalized.output.softening.strength;$('softeningEnabled').checked=normalized.output.softening.enabled;$('softeningStrength').value=String(softeningValue*100);$('blackBarsEnabled').checked=normalized.output.blackBars.enabled;colorValues=M.clone(normalized.output.color);runtimeValues=M.clone(normalized.runtime);
+    outputExtras=M.clone(normalized.output);preferenceExtras=M.clone(normalized.preferences);softeningValue=normalized.output.softening.strength;$('softeningEnabled').checked=normalized.output.softening.enabled;$('softeningStrength').value=String(softeningValue*100);$('blackBarsEnabled').checked=normalized.output.blackBars.enabled;blackFilterValue=normalized.output.blackFilter.threshold;$('blackFilterEnabled').checked=normalized.output.blackFilter.enabled;$('blackFilterThreshold').value=String(blackFilterValue*100);colorValues=M.clone(normalized.output.color);runtimeValues=M.clone(normalized.runtime);
     observedSignature=stable(normalized);return normalized;
   }
   // A configuration and its conditional-write fingerprint must come from one snapshot.
@@ -390,7 +398,7 @@
   $('wledAddress').addEventListener('input',()=>{addressEditing=true;suppressEdits++;try{P.setController({address:$('wledAddress').value.trim()});}finally{suppressEdits--;}$('probeResult').textContent='完成地址输入后自动检测并保存。';edited();});
   function finishAddress(){addressEditing=false;edited();scheduleAutosave();}
   $('wledAddress').addEventListener('blur',finishAddress);$('wledAddress').addEventListener('change',finishAddress);$('wledAddress').addEventListener('keydown',event=>{if(event.key==='Enter'){finishAddress();}});
-  $('brightness').addEventListener('input',()=>{brightnessValue=$('brightness').value===''?NaN:Number($('brightness').value)/100;edited();});$('autoStart').addEventListener('change',edited);$('softeningEnabled').addEventListener('change',edited);$('blackBarsEnabled').addEventListener('change',edited);$('softeningStrength').addEventListener('input',()=>{softeningValue=Number($('softeningStrength').value)/100;edited();});
+  $('brightness').addEventListener('input',()=>{brightnessValue=$('brightness').value===''?NaN:Number($('brightness').value)/100;edited();});$('autoStart').addEventListener('change',edited);$('softeningEnabled').addEventListener('change',edited);$('blackBarsEnabled').addEventListener('change',edited);$('blackFilterEnabled').addEventListener('change',edited);$('blackFilterThreshold').addEventListener('input',()=>{blackFilterValue=$('blackFilterThreshold').value===''?NaN:Number($('blackFilterThreshold').value)/100;edited();});$('softeningStrength').addEventListener('input',()=>{softeningValue=Number($('softeningStrength').value)/100;edited();});
   for(const key of Object.keys(COLOR_FIELDS))for(const suffix of ['', '-number'])$('color-'+key+suffix).addEventListener('input',event=>{colorValues[key]=event.target.value===''?NaN:Number(event.target.value);edited();});
   $('resetColor').addEventListener('click',()=>{colorValues=colorDefaults();edited();feedback('已重置高级颜色校正，其他设置保持不变；调整将自动保存。');});
   $('sourceOffWhenExcluded').addEventListener('change',event=>{if(!runtimeValues.sourceFilter.enabled){render();return;}runtimeValues.sourceFilter.offWhenExcluded=event.target.checked;edited();});

@@ -11,9 +11,9 @@ final class LayoutConfig {
     final int ledCount, pointsPerEdge;
     final Led[] leds;
     final float brightness;
-    final boolean softeningEnabled,blackBarsEnabled,closed,sleepOff,sourceFilterEnabled,sourceOffWhenExcluded;
+    final boolean softeningEnabled,blackBarsEnabled,blackFilterEnabled,closed,sleepOff,sourceFilterEnabled,sourceOffWhenExcluded;
     final String[] allowedSources;
-    final double softeningStrength,samplingInset;
+    final double softeningStrength,samplingInset,blackFilterThreshold;
     final double colorSaturation,colorGain,colorOffset,colorGamma,colorRedGain,colorGreenGain,colorBlueGain;
     static final class Led {
         final int index, order;
@@ -56,6 +56,13 @@ final class LayoutConfig {
         softeningStrength=softening==null?0.35:softening.optDouble("strength",0.35);
         if(!Double.isFinite(softeningStrength)||softeningStrength<0||softeningStrength>1)throw new IllegalArgumentException("柔化强度应在0至1之间");
         blackBarsEnabled=blackBars==null||blackBars.optBoolean("enabled",true);
+        JSONObject blackFilter=output==null?null:output.optJSONObject("blackFilter");
+        if(output!=null&&output.has("blackFilter")&&blackFilter==null)throw new IllegalArgumentException("零散黑点过滤应为对象");
+        blackFilterEnabled=booleanValue(blackFilter,"enabled",true);
+        Object threshold=blackFilter==null||!blackFilter.has("threshold")?0.15:blackFilter.get("threshold");
+        if(!(threshold instanceof Number))throw new IllegalArgumentException("黑点占比阈值必须为数字");
+        blackFilterThreshold=((Number)threshold).doubleValue();
+        if(!Double.isFinite(blackFilterThreshold)||blackFilterThreshold<0.01||blackFilterThreshold>0.5)throw new IllegalArgumentException("黑点占比阈值应在1%至50%之间");
         JSONObject color=output==null?null:output.optJSONObject("color");
         if(output!=null&&output.has("color")&&!output.isNull("color")&&color==null)throw new IllegalArgumentException("颜色校正应为对象");
         colorSaturation=colorValue(color,"saturation",1,0,2);colorGain=colorValue(color,"gain",1,0,2);
