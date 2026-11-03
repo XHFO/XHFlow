@@ -632,7 +632,8 @@ public final class AmbientService extends Service {
         final AtomicInteger ambientRgb=new AtomicInteger(-1);
         volatile int ambientMainBrightness;
         volatile String ambientError="";
-        volatile long ambientLastSent,ambientRetryAt,ambientKeepAlive;
+        volatile long ambientLastSent,ambientRetryAt,ambientKeepAlive,ambientHandshakeAt;
+        volatile boolean ambientPowerOn;
         volatile int ambientFrames;
         final AtomicLong sent=new AtomicLong();
         volatile boolean active=true, valid;
@@ -773,7 +774,14 @@ public final class AmbientService extends Service {
                         ambientRetryAt=SystemClock.elapsedRealtime()+5000;
                         return;
                     }
-                    ambientError="";ambientKeepAlive=0;client.setAmbientPower(true);
+                    ambientError="";ambientKeepAlive=0;ambientHandshakeAt=SystemClock.elapsedRealtime();
+                    if(!ambientPowerOn){client.setAmbientPower(true);ambientPowerOn=true;}
+                }
+                // The device only honours the newest session, so another controller can silently
+                // steal it while keep-alive still answers. Re-handshake now and then to win it back.
+                if(now-ambientHandshakeAt>20000){
+                    if(client.connect(900)){ambientHandshakeAt=SystemClock.elapsedRealtime();ambientKeepAlive=0;ambientError="";}
+                    else{ambientError="氛围灯会话刷新失败，将自动重试";return;}
                 }
                 int color=ambientRgb.get();
                 if(color>=0){
