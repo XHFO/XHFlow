@@ -86,6 +86,22 @@ public final class AmbientContractTest {
         check(YeelightAmbient.ambientColorCommand(1,0x00AABB,"t").endsWith("\r\n"),
                 "LAN commands stay CRLF terminated like the vendor sample");
 
+        // The sender frame is [r,g,b, r,g,b, ...] indexed by WLED LED number.
+        int[] flat = {255, 0, 0, 0, 255, 0, 0, 0, 255};
+        check(AmbientMixer.average(flat, new int[]{0}) == 0xFF0000,"top average reads the first LED triple");
+        check(AmbientMixer.average(flat, new int[]{2}) == 0x0000FF,"top average follows the WLED index");
+        check(AmbientMixer.average(flat, new int[]{0, 1, 2}) == 0x555555,"three LEDs average to their mean");
+        check(AmbientMixer.average(flat, new int[]{1}) == 0x00FF00,"packed-integer misuse would return 255 here");
+        check(AmbientMixer.average(flat, new int[]{}) == 0,"an empty top edge stays black instead of throwing");
+        check(AmbientMixer.average(flat, new int[]{-1, 7}) == 0,"out-of-range LED numbers are ignored");
+        check(AmbientMixer.average(new int[]{40, 60, 80}, new int[]{0}) == 0x283C50,"one LED passes its channels straight through");
+        check(AmbientMixer.average(new int[]{}, new int[]{0}) == 0,"a short frame never reads past the end");
+        check(AmbientMixer.mainLightPercent(flat, 60) == 60,"a white frame reaches the configured ceiling");
+        check(AmbientMixer.mainLightPercent(new int[]{0, 0, 0, 0, 0, 0}, 60) == 1,"a black frame keeps the lamp at its floor");
+        check(AmbientMixer.mainLightPercent(new int[]{128, 128, 128}, 100) == 50,"half brightness maps to half of the ceiling");
+        check(AmbientMixer.mainLightPercent(new int[]{255, 255, 255}, 0) == 1,"a zero ceiling is clamped to one percent");
+        check(AmbientMixer.mainLightPercent(null, 60) == 1,"a missing frame keeps the lamp at its floor");
+
         System.out.println("AmbientContractTest PASS (" + checks + " checks, no network or device access)");
     }
 

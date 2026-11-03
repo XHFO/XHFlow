@@ -3,9 +3,28 @@
   const SIDES = ['top', 'right', 'bottom', 'left'];
   const NAMES = {top:'上边', right:'右边', bottom:'下边', left:'左边'};
   const EPS = 1e-8;
-  function defaultGeometry(){return {screen:{x:.14,y:.14,width:.72,height:.72},strip:{x:.14,y:.14,width:.72,height:.72}};}
-  function geometry(config){return config.geometry||defaultGeometry();}
-  function validGeometry(g){return !!g&&['screen','strip'].every(key=>{const rect=g[key];return rect&&['x','y','width','height'].every(field=>typeof rect[field]==='number'&&Number.isFinite(rect[field]))&&rect.x>=0&&rect.y>=0&&rect.width>=.02&&rect.height>=.02&&rect.x+rect.width<=1+EPS&&rect.y+rect.height<=1+EPS;});}
+  function ambientBar(screen){
+    const width=Math.min(.9,Math.max(.1,screen.width)),height=.034;
+    return {x:Math.min(1-width,Math.max(0,screen.x+(screen.width-width)/2)),y:Math.max(0,screen.y-.105),width,height};
+  }
+  function defaultGeometry(){
+    const screen={x:.14,y:.14,width:.72,height:.72};
+    return {screen,strip:{x:.14,y:.14,width:.72,height:.72},ambient:ambientBar(screen)};
+  }
+  function validRect(rect,minSize){
+    return !!rect&&['x','y','width','height'].every(field=>typeof rect[field]==='number'&&Number.isFinite(rect[field]))&&rect.x>=0&&rect.y>=0&&rect.width>=minSize&&rect.height>=minSize&&rect.x+rect.width<=1+EPS&&rect.y+rect.height<=1+EPS;
+  }
+  function geometry(config){
+    const raw=config&&config.geometry;
+    if(!raw)return defaultGeometry();
+    const fallback=defaultGeometry(),screen=validRect(raw.screen,.02)?raw.screen:fallback.screen;
+    return {screen:raw.screen,strip:raw.strip,ambient:validRect(raw.ambient,.01)?raw.ambient:ambientBar(screen)};
+  }
+  function validGeometry(g){
+    if(!g||!validRect(g.screen,.02)||!validRect(g.strip,.02))return false;
+    if(g.ambient!==undefined&&!validRect(g.ambient,.01))return false;
+    return true;
+  }
   function sampling(config){return config.sampling&&config.sampling.inset!==undefined?config.sampling.inset:.045;}
   function samplingQuality(config){return config.sampling&&config.sampling.quality!==undefined?config.sampling.quality:'standard';}
   function ambientDefaults(){return {enabled:false,address:'',model:'',brightness:.8,mainLight:{enabled:true,maxBrightness:60}};}
@@ -179,7 +198,7 @@
       leds:result.leds.map(led=>({order:led.order,wledIndex:led.physicalIndex,edge:led.edge,position:led.position,sample:led.sample})),
       unassignedIndices:Array.from({length:budget},(_,i)=>i).filter(i=>i<config.offset||i>=config.offset+result.total)};
   }
-  const api={SIDES,NAMES,defaultGeometry,geometry,validGeometry,projectSample,sampling,samplingQuality,interpolateEdge,previewField,defaults,clone,intervals,allocate,autoDistribute,components,point,sample,evaluate,exportLayout,ambientDefaults,normalizeAmbient,privateIpv4};
+  const api={SIDES,NAMES,defaultGeometry,geometry,validGeometry,ambientBar,validRect,projectSample,sampling,samplingQuality,interpolateEdge,previewField,defaults,clone,intervals,allocate,autoDistribute,components,point,sample,evaluate,exportLayout,ambientDefaults,normalizeAmbient,privateIpv4};
   if(typeof module!=='undefined' && module.exports) module.exports=api;
   scope.LayoutModel=api;
 })(typeof globalThis!=='undefined'?globalThis:window);

@@ -9,6 +9,7 @@
   // SVG geometry uses matching rx values for shapes, clips and selection outlines.
   // Continuous corners are a CSS-box enhancement; SVG keeps the round fallback.
   const DRAW_RADIUS={screen:8,caption:12,region:4,handle:4};
+  const TARGET_NAMES={screen:'屏幕',strip:'灯带',ambient:'挂灯'};
   function number(value,fallback){return typeof value==='number'&&Number.isFinite(value)?value:fallback;}
   function safeRestore(raw){
     const s=M.defaults();
@@ -46,13 +47,13 @@
   }
   function makeGeometryInteractive(node,target,corner){
     node.classList.add(corner?'geometry-handle':'geometry-drag');if(corner)node.style.cursor=((corner==='nw'||corner==='se')!==(config.view==='back'))?'nwse-resize':'nesw-resize';node.setAttribute('tabindex','0');node.setAttribute('role','button');
-    node.setAttribute('aria-label',(target==='screen'?'屏幕':'灯带')+'方框'+(corner?'尺寸调整角':'，可拖动或用方向键移动'));
+    node.setAttribute('aria-label',TARGET_NAMES[target]+'方框'+(corner?'尺寸调整角':'，可拖动或用方向键移动'));
     node.addEventListener('pointerdown',event=>{
       if(event.button!==0)return;event.preventDefault();event.stopPropagation();geometryTarget=target;
       const initial=M.clone(M.validGeometry(M.geometry(config))?M.geometry(config):M.defaultGeometry()),start=worldPoint(event),svg=$('diagram'),pointerId=event.pointerId;
       if(svg.setPointerCapture)svg.setPointerCapture(pointerId);
       function move(e){if(e.pointerId!==pointerId)return;e.preventDefault();const current=worldPoint(e);config.geometry=M.clone(initial);config.geometry[target]=adjustedRect(initial[target],corner,current.x-start.x,current.y-start.y);render();}
-      function end(e){if(e.pointerId!==pointerId)return;window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',end);window.removeEventListener('pointercancel',end);if(svg.hasPointerCapture&&svg.hasPointerCapture(pointerId))svg.releasePointerCapture(pointerId);feedback('已调整'+(target==='screen'?'屏幕':'灯带')+'方框；灯号顺序保持不变。停止调整后会自动保存。');}
+      function end(e){if(e.pointerId!==pointerId)return;window.removeEventListener('pointermove',move);window.removeEventListener('pointerup',end);window.removeEventListener('pointercancel',end);if(svg.hasPointerCapture&&svg.hasPointerCapture(pointerId))svg.releasePointerCapture(pointerId);feedback('已调整'+TARGET_NAMES[target]+'方框；灯号顺序保持不变。停止调整后会自动保存。');}
       window.addEventListener('pointermove',move,{passive:false});window.addEventListener('pointerup',end);window.addEventListener('pointercancel',end);render();
     });
     node.addEventListener('keydown',event=>{
@@ -63,7 +64,9 @@
   }
   function draw(result){
     const svg=$('diagram');while(svg.children.length>2)svg.lastChild.remove();
-    const defs=createSvg('defs'),marker=createSvg('marker',{id:'arrow',viewBox:'0 0 10 10',refX:8,refY:5,markerWidth:5,markerHeight:5,orient:'auto-start-reverse'});marker.append(createSvg('path',{d:'M0 0L10 5L0 10',fill:'none',stroke:'var(--secondary)','stroke-width':1.8}));defs.append(marker);svg.append(defs);
+    const defs=createSvg('defs'),marker=createSvg('marker',{id:'arrow',viewBox:'0 0 10 10',refX:8,refY:5,markerWidth:5,markerHeight:5,orient:'auto-start-reverse'});marker.append(createSvg('path',{d:'M0 0L10 5L0 10',fill:'none',stroke:'var(--secondary)','stroke-width':1.8}));defs.append(marker);
+    const glow=createSvg('filter',{id:'ambient-glow',x:'-30%',y:'-60%',width:'160%',height:'220%','color-interpolation-filters':'sRGB'});glow.append(createSvg('feGaussianBlur',{stdDeviation:'5'}));defs.append(glow);
+    svg.append(defs);
     const geometry=M.validGeometry(M.geometry(config))?M.geometry(config):M.defaultGeometry(),screen=geometry.screen,strip=geometry.strip;
     function scene(p){return {x:SCENE.x+(config.view==='back'?1-p.x:p.x)*SCENE.w,y:SCENE.y+p.y*SCENE.h};}
     function xy(p){return scene({x:strip.x+p.x*strip.width,y:strip.y+p.y*strip.height});}
@@ -96,6 +99,7 @@
       }
       for(const point of livePreview.points){const p=scene({x:screen.x+point.x*screen.width,y:screen.y+point.y*screen.height});svg.append(createSvg('circle',{cx:p.x,cy:p.y,r:4.2,fill:point.color,stroke:'var(--surface)','stroke-width':1.2,'pointer-events':'none'}));}
     }
+    svg.append(renderAmbientBar(rect(geometry.ambient),livePreview));
     const wire=createSvg('rect' ,{class:'wire geometry-strip',x:b.x,y:b.y,width:b.w,height:b.h,rx:DRAW_RADIUS.region});svg.append(wire);
     const stripHit=createSvg('rect',{x:b.x,y:b.y,width:b.w,height:b.h,rx:DRAW_RADIUS.region,fill:geometryTarget==='strip'?'transparent':'none',stroke:'transparent','stroke-width':18});makeGeometryInteractive(stripHit,'strip');svg.append(stripHit);
     const labelLocations={top:[b.x+b.w/2,b.y<60?b.y+30:b.y-24],right:[b.x+b.w>830?b.x+b.w-45:b.x+b.w+47,b.y+b.h/2],bottom:[b.x+b.w/2,b.y+b.h>CANVAS.height-60?b.y+b.h-25:b.y+b.h+39],left:[b.x<70?b.x+45:b.x-47,b.y+b.h/2]};
@@ -119,7 +123,24 @@
     if(result.leds.length){const first=result.leds[0],p=xy(first.position),edge=config.view==='back'?(first.edge==='right'?'left':first.edge==='left'?'right':first.edge):first.edge,delta={top:[20,32],right:[32,-16],bottom:[-10,43],left:[-32,36]}[edge];svg.append(createSvg('line',{class:'start-tail',x1:p.x,y1:p.y,x2:p.x+delta[0]*.65,y2:p.y+delta[1]*.6}));svg.append(createSvg('text',{class:'first-label',x:p.x+delta[0],y:p.y+delta[1],'text-anchor':edge==='right'?'start':edge==='left'?'end':'middle','pointer-events':'none'},'首灯 · WLED '+first.physicalIndex));const path=result.leds.slice(0,Math.min(7,result.leds.length)).map((led,i)=>{const p=xy(led.position);return(i?'L':'M')+p.x+','+p.y;}).join(' ');svg.append(createSvg('path',{class:'direction-arrow',d:path,'marker-end':'url(#arrow)','pointer-events':'none'}));}
     const selected=geometry[geometryTarget],selectedRect=rect(selected);svg.append(createSvg('rect',{class:'geometry-selection',x:selectedRect.x,y:selectedRect.y,width:selectedRect.w,height:selectedRect.h,rx:geometryTarget==='screen'?DRAW_RADIUS.screen:DRAW_RADIUS.region,fill:'none',stroke:'var(--accent)','stroke-width':1.5,'stroke-dasharray':'5 4','pointer-events':'none'}));
     for(const [corner,x,y]of [['nw',selected.x,selected.y],['ne',selected.x+selected.width,selected.y],['sw',selected.x,selected.y+selected.height],['se',selected.x+selected.width,selected.y+selected.height]]){const p=scene({x,y}),handle=createSvg('rect',{x:p.x-6,y:p.y-6,width:12,height:12,rx:DRAW_RADIUS.handle,fill:'var(--surface)',stroke:'var(--accent)','stroke-width':2});makeGeometryInteractive(handle,geometryTarget,corner);svg.append(handle);}
-    svg.append(createSvg('text',{x:selectedRect.x+12,y:selectedRect.y+18,'text-anchor':'start',fill:'var(--accent)','font-size':11,'pointer-events':'none'},(geometryTarget==='screen'?'屏幕':'灯带')+'方框 · 已选中'));
+    svg.append(createSvg('text',{x:selectedRect.x+12,y:selectedRect.y+18,'text-anchor':'start',fill:'var(--accent)','font-size':11,'pointer-events':'none'},TARGET_NAMES[geometryTarget]+'方框 · 已选中'));
+  }
+  function averageTopColor(points){
+    const top=points.filter(point=>point.edge==='top'&&/^#[0-9a-f]{6}$/i.test(point.color));
+    if(!top.length)return null;
+    let r=0,g=0,b=0;
+    for(const point of top){r+=parseInt(point.color.slice(1,3),16);g+=parseInt(point.color.slice(3,5),16);b+=parseInt(point.color.slice(5,7),16);}
+    const hex=value=>Math.round(value/top.length).toString(16).padStart(2,'0');
+    return '#'+hex(r)+hex(g)+hex(b);
+  }
+  function renderAmbientBar(r,live){
+    const group=createSvg('g',{class:'ambient-device'}),color=live?averageTopColor(live.points):null;
+    if(color)group.append(createSvg('rect',{x:r.x-7,y:r.y-7,width:r.w+14,height:r.h+14,rx:(r.h+14)/2,fill:color,opacity:.26,filter:'url(#ambient-glow)','pointer-events':'none'}));
+    const bar=createSvg('rect',{class:'ambient-bar',x:r.x,y:r.y,width:r.w,height:r.h,rx:r.h/2,fill:color||'var(--surface)','fill-opacity':color?1:.55,stroke:'var(--control-border)','stroke-width':1.2});makeGeometryInteractive(bar,'ambient');group.append(bar);
+    const dots=Math.max(6,Math.min(16,Math.round(r.w/46))),radius=Math.min(4,Math.max(2,r.h/3));
+    for(let i=0;i<dots;i++)group.append(createSvg('circle',{cx:r.x+r.w*(i+.5)/dots,cy:r.y+r.h/2,r:radius,fill:'#ffffff','fill-opacity':color?.42:.22,'pointer-events':'none'}));
+    group.append(createSvg('text',{class:'diagram-label',x:r.x+r.w/2,y:Math.max(14,r.y-9),'text-anchor':'middle','pointer-events':'none'},'Yeelight 挂灯 · 单色'+(color?' · '+color.toUpperCase():'')));
+    return group;
   }
   function buildEdgeControls(){
     const wrap=$('edgeControls');
@@ -135,7 +156,7 @@
     const c=config.shape==='c', result=M.evaluate(config,BUDGET),g=M.geometry(config);
     const quality=M.samplingQuality(config);$('samplingStandard').setAttribute('aria-pressed',String(quality==='standard'));$('samplingFine').setAttribute('aria-pressed',String(quality==='fine'));$('samplingQualityHint').classList.toggle('is-fine',quality==='fine');
     const inset=M.sampling(config);value('samplingInset',Number.isFinite(inset)?inset*100:'');value('insetNumber',Number.isFinite(inset)?Number((inset*100).toFixed(3)):'');$('insetOutput').textContent=Number.isFinite(inset)?Number((inset*100).toFixed(2))+'%':'—';
-    $('selectScreen').setAttribute('aria-pressed',String(geometryTarget==='screen'));$('selectStrip').setAttribute('aria-pressed',String(geometryTarget==='strip'));
+    $('selectScreen').setAttribute('aria-pressed',String(geometryTarget==='screen'));$('selectStrip').setAttribute('aria-pressed',String(geometryTarget==='strip'));$('selectAmbient').setAttribute('aria-pressed',String(geometryTarget==='ambient'));
     for(const key of ['x','y','width','height'])value('geometry-'+key,Number.isFinite(g[geometryTarget]&&g[geometryTarget][key])?Number((g[geometryTarget][key]*100).toFixed(3)):'');
     $('shapeC').setAttribute('aria-pressed',String(c));$('shapeClosed').setAttribute('aria-pressed',String(!c));
     $('cGapControls').hidden=!c;$('closedCutControls').hidden=c;$('cFirstControls').hidden=!c;
@@ -155,7 +176,7 @@
   function chooseShape(shape){if(config.shape===shape)return;shapeSnapshots[config.shape]=M.clone(config);const previous=shapeSnapshots[shape];if(previous){const view=config.view,offset=config.offset,direction=config.direction,geometry=M.clone(M.geometry(config)),sampling=M.clone(config.sampling||M.defaults().sampling);config=M.clone(previous);config.view=view;config.offset=offset;config.direction=direction;config.geometry=geometry;config.sampling=sampling;}else{config.shape=shape;for(const side of M.SIDES)config.edges[side]={count:0,full:true,start:0,end:100};if(shape==='closed'){config.cut={edge:config.gap.edge,position:50};M.autoDistribute(config,BUDGET);}else{config.gap={edge:'bottom',start:0,end:100};M.autoDistribute(config,BUDGET);}}render();feedback('已切换轮廓。请按安装情况校准每条边的灯珠数。');}
   for(const [id,quality]of [['samplingStandard','standard'],['samplingFine','fine']])$(id).addEventListener('click',()=>{config.sampling={...(config.sampling||{}),quality};render();feedback(quality==='fine'?'已选择细腻：40 个取色点，延迟会增大。有效改动会自动保存。':'已选择标准：20 个取色点。有效改动会自动保存。');});
   for(const id of ['samplingInset','insetNumber'])$(id).addEventListener('input',event=>{config.sampling={...(config.sampling||{}),inset:event.target.value===''?NaN:Number(event.target.value)/100};render();});
-  for(const target of ['screen','strip'])$(target==='screen'?'selectScreen':'selectStrip').addEventListener('click',()=>{geometryTarget=target;render();});
+  for(const target of ['screen','strip','ambient'])$(target==='screen'?'selectScreen':target==='strip'?'selectStrip':'selectAmbient').addEventListener('click',()=>{geometryTarget=target;render();});
   for(const key of ['x','y','width','height'])$('geometry-'+key).addEventListener('input',event=>{config.geometry=M.clone(M.geometry(config));config.geometry[geometryTarget][key]=event.target.value===''?NaN:Number(event.target.value)/100;render();});
   $('insetScreen').addEventListener('click',()=>{config.geometry=M.clone(M.geometry(config));const strip=config.geometry.strip;config.geometry.screen={x:strip.x+strip.width*.06,y:strip.y+strip.height*.06,width:strip.width*.88,height:strip.height*.88};geometryTarget='screen';render();feedback('屏幕已在灯带内居中缩小一圈。请按实际安装调整。停止调整后会自动保存。');});
   $('alignFrames').addEventListener('click',()=>{config.geometry=M.clone(M.geometry(config));config.geometry.screen=M.clone(config.geometry.strip);geometryTarget='screen';render();feedback('屏幕与灯带方框已重合，取色投影恢复为按边对应；会自动保存。');});

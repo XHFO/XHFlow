@@ -2,6 +2,7 @@ package net.xhfo.tvwled;
 
 import android.content.Context;
 import android.net.wifi.WifiManager;
+import android.util.Log;
 import java.io.Closeable;
 import java.net.DatagramPacket;
 import java.net.DatagramSocket;
@@ -29,6 +30,7 @@ final class YeelightAmbient implements Closeable {
     static final int LAN_PORT = 55444;
     private static final String SSDP_GROUP = "239.255.255.250";
     private static final int SSDP_PORT = 1982;
+    private static final String TAG = "TVWLED";
     private static final Pattern TOKEN = Pattern.compile("\"token\"\\s*:\\s*\"([0-9a-fA-F]{32})\"");
     private static final Pattern LOCATION = Pattern.compile("Location:\\s*yeelight://([0-9.]+):(\\d+)", Pattern.CASE_INSENSITIVE);
     private static final Pattern SUPPORT = Pattern.compile("support:\\s*([^\\r\\n]+)", Pattern.CASE_INSENSITIVE);
@@ -41,7 +43,11 @@ final class YeelightAmbient implements Closeable {
     private String model = "";
     private int messageId = 1;
     private int lastRgb = -1, lastBrightness = -1, lastMainBrightness = -1;
+    private long lastBrightnessAt, lastMainBrightnessAt;
     private long lastCommandAt;
+    /** 2 = session protocol (udp_sess_*), 1 = legacy udp_new token. Firmware decides which answers. */
+    private int protocol;
+    private int keepAliveMisses;
 
     YeelightAmbient(String address) throws Exception {
         LayoutConfig.validateAddress(address);
@@ -53,23 +59,35 @@ final class YeelightAmbient implements Closeable {
     String model() { return model; }
     boolean connected() { return !token.isEmpty(); }
 
-    /** Sends {@code udp_new} and waits for the token reply. Returns false when the device stays silent. */
+    /**
+     * Asks for a token. Firmware answers exactly one of {@code udp_new} (legacy) or
+     * {@code udp_sess_new} (session); the screen light bar pro rejects the legacy method with
+     * {@code invalid parameter} and only accepts the session form.
+     */
     synchronized boolean connect(int timeoutMs) {
         closeSocket();
+        token = "";
+        protocol = 0;
+        keepAliveMisses = 0;
         try {
             socket = new DatagramSocket();
             socket.setSoTimeout(Math.max(120, timeoutMs));
-            for (String method : new String[]{"udp_new", "udp_sess_new"}) {
-                send(new JSONObject().put("id", next()).put("method", method).put("params", new org.json.JSONArray()).toString() + "\r\n");
+            String[][] attempts = {{"udp_new", "1"}, {"udp_sess_new", "2"}};
+            for (String[] attempt : attempts) {
+                send(new JSONObject().put("id", next()).put("method", attempt[0])
+                        .put("params", new org.json.JSONArray()).toString() + "\r\n");
                 long deadline = System.currentTimeMillis() + Math.max(200, timeoutMs / 2);
                 while (System.currentTimeMillis() < deadline) {
                     String reply = receive(Math.max(80, timeoutMs));
                     if (reply == null) break;
                     Matcher matcher = TOKEN.matcher(reply);
-                    if (matcher.find()) {
+                    if (matcher.find() && reply.contains("token")) {
                         token = matcher.group(1);
+                        protocol = Integer.parseInt(attempt[1]);
+                        lastRgb = -1; lastBrightness = -1; lastMainBrightness = -1;
                         Matcher name = MODEL.matcher(reply);
                         if (name.find() && model.isEmpty()) model = name.group(1).trim();
+                        Log.i(TAG, "yeelight token acquired via " + attempt[0]);
                         return true;
                     }
                     if (reply.contains("\"error\"")) break;
@@ -80,6 +98,7 @@ final class YeelightAmbient implements Closeable {
             // A silent socket is the normal "not reachable" answer; the caller retries with backoff.
         }
         token = "";
+        protocol = 0;
         return false;
     }
 
@@ -87,9 +106,12 @@ final class YeelightAmbient implements Closeable {
     synchronized void sendColor(int rgb, int brightnessPercent) {
         if (!connected()) return;
         int color = rgb & 0xFFFFFF, level = clamp(brightnessPercent, 1, 100);
-        if (level != lastBrightness) {
+        long now = System.currentTimeMillis();
+        // Power-on can reset the level, and UDP has no receipt: re-assert it now and then.
+        if (level != lastBrightness || now - lastBrightnessAt > 15000) {
             send(ambientBrightnessCommand(next(), level, token));
             lastBrightness = level;
+            lastBrightnessAt = now;
         }
         if (color == lastRgb) return;
         send(ambientColorCommand(next(), color, token));
@@ -101,8 +123,10 @@ final class YeelightAmbient implements Closeable {
     synchronized void sendMainBrightness(int percent) {
         if (!connected()) return;
         int level = clamp(percent, 1, 100);
-        if (level == lastMainBrightness) return;
+        long now = System.currentTimeMillis();
+        if (level == lastMainBrightness && now - lastMainBrightnessAt < 15000) return;
         lastMainBrightness = level;
+        lastMainBrightnessAt = now;
         sendCommand(mainBrightnessCommand(next(), level, token));
     }
 
@@ -112,11 +136,32 @@ final class YeelightAmbient implements Closeable {
                 next(), on ? "on" : "off", token));
     }
 
-    synchronized void keepAlive() {
-        sendCommand(String.format(Locale.ROOT,
-                "{ \"id\":%d, \"method\" : \"udp_keep_alive\", \"params\" : [\"keeplive_interval\",\"10\"], \"token\":\"%s\" }\r\n",
-                next(), token));
+    /**
+     * Keeps the session alive. The session form is answered with {@code ["ok"]}, which is the only
+     * way to notice that the device dropped us; the legacy form is sent without waiting.
+     *
+     * @return true when the session still answers
+     */
+    synchronized boolean keepAlive() {
+        if (!connected()) return false;
+        String method = protocol == 2 ? "udp_sess_keep_alive" : "udp_keep_alive";
+        send(String.format(Locale.ROOT,
+                "{ \"id\":%d, \"method\" : \"%s\", \"params\" : [\"keeplive_interval\",\"10\"], \"token\":\"%s\" }\r\n",
+                next(), method, token));
+        if (protocol != 2) return true;
+        String reply = receive(350);
+        if (reply == null) {
+            keepAliveMisses++;
+            if (keepAliveMisses >= 2) { token = ""; protocol = 0; keepAliveMisses = 0; Log.w(TAG, "yeelight session lost; re-handshaking"); }
+            return false;
+        }
+        keepAliveMisses = 0;
+        Matcher rotated = TOKEN.matcher(reply);
+        if (rotated.find()) token = rotated.group(1);
+        return true;
     }
+
+    int protocol() { return protocol; }
 
     static String ambientColorCommand(int id, int rgb, String token) {
         return String.format(Locale.ROOT,
@@ -176,7 +221,7 @@ final class YeelightAmbient implements Closeable {
         if (socket != null) { try { socket.close(); } catch (Exception ignored) {} socket = null; }
     }
 
-    @Override public synchronized void close() { token = ""; lastRgb = -1; lastBrightness = -1; lastMainBrightness = -1; closeSocket(); }
+    @Override public synchronized void close() { token = ""; lastRgb = -1; lastBrightness = -1; lastMainBrightness = -1; lastBrightnessAt = 0; lastMainBrightnessAt = 0; closeSocket(); }
 
     // ---- discovery / probe -------------------------------------------------------------
 

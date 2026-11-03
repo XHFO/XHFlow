@@ -753,25 +753,9 @@ public final class AmbientService extends Service {
                 synchronized(lifecycleLock){if(isCurrent()){error="发送失败："+failure.getMessage();state="WLED 发送异常";publish();}}
             }
         }
-        /** The bar's back LED is one colour, so the top edge gate is averaged into a single value. */
         void queueAmbient(int[] rgb){
-            int[] indices=topIndices;
-            int red=0,green=0,blue=0,count=0,peak=0,total=0,lit=0;
-            for(int index:indices){
-                if(index<0||index>=rgb.length)continue;
-                int color=rgb[index],r=(color>>16)&255,g=(color>>8)&255,b=color&255;
-                red+=r;green+=g;blue+=b;count++;
-            }
-            for(int index=0;index<rgb.length;index++){
-                int color=rgb[index],r=(color>>16)&255,g=(color>>8)&255,b=color&255;
-                int brightest=Math.max(r,Math.max(g,b));
-                peak=Math.max(peak,brightest);total+=brightest;lit++;
-            }
-            int color=count==0?0:((Math.min(255,red/count)<<16)|(Math.min(255,green/count)<<8)|Math.min(255,blue/count));
-            ambientRgb.set(color);
-            int max=Math.max(1,config.ambientMainMaxBrightness);
-            int level=lit==0?1:(int)Math.round(Math.min(peak,total/lit)/255.0*max);
-            ambientMainBrightness=Math.max(1,Math.min(max,level));
+            ambientRgb.set(AmbientMixer.average(rgb,topIndices));
+            ambientMainBrightness=AmbientMixer.mainLightPercent(rgb,config.ambientMainMaxBrightness);
         }
         void ambientTick(){
             if(!isCurrent())return;
