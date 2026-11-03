@@ -119,6 +119,19 @@ final class LayoutConfig {
         ambientMainMaxBrightness=(int)maxValue;
         raw=root.toString();fingerprint=ConfigFingerprint.of(root);
     }
+    /**
+     * Centre-weighted mixing for a single-colour bar above the screen: the middle of the top edge
+     * dominates, the corners keep a fifth of the weight so a bright corner still tints it.
+     */
+    double[] edgeWeights(String edge){
+        double[] weights=new double[leds.length];int cursor=0;
+        for(Led led:leds){
+            if(!led.edge.equals(edge))continue;
+            double offset=led.u-.5;
+            weights[cursor++]=.2+.8*Math.exp(-(offset*offset)/(2*.22*.22));
+        }
+        return java.util.Arrays.copyOf(weights,cursor);
+    }
     int[] edgeIndices(String edge){
         int count=0;for(Led led:leds)if(led.edge.equals(edge))count++;
         int[] indices=new int[count];int cursor=0;

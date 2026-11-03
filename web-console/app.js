@@ -125,12 +125,18 @@
     for(const [corner,x,y]of [['nw',selected.x,selected.y],['ne',selected.x+selected.width,selected.y],['sw',selected.x,selected.y+selected.height],['se',selected.x+selected.width,selected.y+selected.height]]){const p=scene({x,y}),handle=createSvg('rect',{x:p.x-6,y:p.y-6,width:12,height:12,rx:DRAW_RADIUS.handle,fill:'var(--surface)',stroke:'var(--accent)','stroke-width':2});makeGeometryInteractive(handle,geometryTarget,corner);svg.append(handle);}
     svg.append(createSvg('text',{x:selectedRect.x+12,y:selectedRect.y+18,'text-anchor':'start',fill:'var(--accent)','font-size':11,'pointer-events':'none'},TARGET_NAMES[geometryTarget]+'方框 · 已选中'));
   }
+  // Mirrors AmbientMixer: the middle of the top edge dominates a single-colour bar.
+  function topWeight(position){const offset=position-.5;return .2+.8*Math.exp(-(offset*offset)/(2*.22*.22));}
   function averageTopColor(points){
     const top=points.filter(point=>point.edge==='top'&&/^#[0-9a-f]{6}$/i.test(point.color));
     if(!top.length)return null;
-    let r=0,g=0,b=0;
-    for(const point of top){r+=parseInt(point.color.slice(1,3),16);g+=parseInt(point.color.slice(3,5),16);b+=parseInt(point.color.slice(5,7),16);}
-    const hex=value=>Math.round(value/top.length).toString(16).padStart(2,'0');
+    let r=0,g=0,b=0,total=0;
+    for(const point of top){
+      const weight=topWeight(Number.isFinite(point.position)?point.position:.5);
+      r+=parseInt(point.color.slice(1,3),16)*weight;g+=parseInt(point.color.slice(3,5),16)*weight;b+=parseInt(point.color.slice(5,7),16)*weight;total+=weight;
+    }
+    if(!(total>0))return null;
+    const hex=value=>Math.round(value/total).toString(16).padStart(2,'0');
     return '#'+hex(r)+hex(g)+hex(b);
   }
   function renderAmbientBar(r,live){

@@ -12,18 +12,33 @@ final class AmbientMixer {
 
     /** Mean of the given LED numbers, clamped into 0xRRGGBB. Empty selection becomes black. */
     static int average(int[] flatRgb, int[] ledIndices) {
+        return average(flatRgb, ledIndices, null);
+    }
+
+    /**
+     * Weighted mean of the given LED numbers. Weights are positional (one per index); a null or
+     * short weight array falls back to an even mix, so a caller can never silently bias the mix.
+     */
+    static int average(int[] flatRgb, int[] ledIndices, double[] weights) {
         if (flatRgb == null || ledIndices == null) return 0;
-        int red = 0, green = 0, blue = 0, count = 0;
-        for (int index : ledIndices) {
+        double red = 0, green = 0, blue = 0, total = 0;
+        for (int i = 0; i < ledIndices.length; i++) {
+            int index = ledIndices[i];
             int base = index * 3;
             if (index < 0 || base + 2 >= flatRgb.length) continue;
-            red += flatRgb[base];
-            green += flatRgb[base + 1];
-            blue += flatRgb[base + 2];
-            count++;
+            double weight = weights != null && i < weights.length && Double.isFinite(weights[i]) && weights[i] >= 0 ? weights[i] : 1;
+            if (weight == 0) continue;
+            red += flatRgb[base] * weight;
+            green += flatRgb[base + 1] * weight;
+            blue += flatRgb[base + 2] * weight;
+            total += weight;
         }
-        if (count == 0) return 0;
-        return (clamp(red / count) << 16) | (clamp(green / count) << 8) | clamp(blue / count);
+        if (total <= 0) return 0;
+        return (channel(red / total) << 16) | (channel(green / total) << 8) | channel(blue / total);
+    }
+
+    private static int channel(double value) {
+        return clamp((int) Math.round(value));
     }
 
     /**

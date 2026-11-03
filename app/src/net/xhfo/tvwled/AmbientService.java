@@ -629,6 +629,7 @@ public final class AmbientService extends Service {
         final ScheduledExecutorService ambientLoop=Executors.newSingleThreadScheduledExecutor(r->new Thread(r,"TVWLED-yeelight"));
         volatile YeelightAmbient ambient;
         volatile int[] topIndices=new int[0];
+        volatile double[] topWeights=new double[0];
         final AtomicInteger ambientRgb=new AtomicInteger(-1);
         volatile int ambientMainBrightness;
         volatile String ambientError="";
@@ -680,7 +681,7 @@ public final class AmbientService extends Service {
                     sampler.schedule(this::sample,0,TimeUnit.MILLISECONDS);
                     sender.scheduleAtFixedRate(this::send,0,33,TimeUnit.MILLISECONDS);
                     if(config.ambientEnabled){
-                        topIndices=config.edgeIndices("top");
+                        topIndices=config.edgeIndices("top");topWeights=config.edgeWeights("top");
                         ambientLoop.scheduleAtFixedRate(this::ambientTick,0,100,TimeUnit.MILLISECONDS);
                     }
                 }
@@ -755,7 +756,7 @@ public final class AmbientService extends Service {
             }
         }
         void queueAmbient(int[] rgb){
-            ambientRgb.set(AmbientMixer.average(rgb,topIndices));
+            ambientRgb.set(AmbientMixer.average(rgb,topIndices,topWeights));
             ambientMainBrightness=AmbientMixer.mainLightPercent(rgb,config.ambientMainMaxBrightness);
         }
         void ambientTick(){

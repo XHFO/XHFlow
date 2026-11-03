@@ -102,6 +102,26 @@ public final class AmbientContractTest {
         check(AmbientMixer.mainLightPercent(new int[]{255, 255, 255}, 0) == 1,"a zero ceiling is clamped to one percent");
         check(AmbientMixer.mainLightPercent(null, 60) == 1,"a missing frame keeps the lamp at its floor");
 
+        // Centre weighting: the middle of the top edge dominates a single-colour bar.
+        double[] weights = edges.edgeWeights("top");
+        check(weights.length == 2,"weights follow the top-edge LED count");
+        check(Math.abs(weights[1] - 1.0) < 1e-9,"the centre of the top edge carries full weight");
+        check(weights[0] > .3 && weights[0] < .4,"an off-centre LED keeps a reduced weight");
+        check(edges.edgeWeights("left").length == 0,"an unused edge has no weights");
+        double[] flatWeights = {1, 1, 1};
+        check(AmbientMixer.average(flat, new int[]{0, 1, 2}, flatWeights) == AmbientMixer.average(flat, new int[]{0, 1, 2}),
+                "equal weights reproduce the plain mean");
+        check(AmbientMixer.average(flat, new int[]{0, 1, 2}, null) == AmbientMixer.average(flat, new int[]{0, 1, 2}),
+                "a missing weight array falls back to an even mix");
+        int greenHeavy = AmbientMixer.average(flat, new int[]{0, 1, 2}, new double[]{.05, 10, .05});
+        check(((greenHeavy>>16)&255)<=2 && ((greenHeavy>>8)&255)>=250 && (greenHeavy&255)<=2,"a dominant centre swallows the corner colours");
+        int balanced = AmbientMixer.average(flat, new int[]{0, 1, 2}, new double[]{1, 1, 1});
+        check(balanced == 0x555555,"three equal LEDs still average evenly");
+        check(AmbientMixer.average(flat, new int[]{0, 1}, new double[]{1}) == 0x808000,
+                "a short weight array falls back to one for the rest");
+        check(AmbientMixer.average(flat, new int[]{0}, new double[]{0}) == 0,
+                "zero weights never divide by zero");
+
         System.out.println("AmbientContractTest PASS (" + checks + " checks, no network or device access)");
     }
 
