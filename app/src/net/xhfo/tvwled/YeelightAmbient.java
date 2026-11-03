@@ -114,7 +114,7 @@ final class YeelightAmbient implements Closeable {
             lastBrightness = level;
             lastBrightnessAt = now;
         }
-        if (color == lastRgb) return;
+        if (sameColor(color, lastRgb, 2)) return;
         send(ambientColorCommand(next(), color, token));
         lastRgb = color;
         lastCommandAt = System.currentTimeMillis();
@@ -182,6 +182,14 @@ final class YeelightAmbient implements Closeable {
     }
 
     int protocol() { return protocol; }
+
+    /** Two levels of slack: the sampled colour wobbles by one on a still picture. */
+    static boolean sameColor(int a, int b, int tolerance) {
+        if (b < 0) return false;
+        return Math.abs(((a >> 16) & 255) - ((b >> 16) & 255)) <= tolerance
+            && Math.abs(((a >> 8) & 255) - ((b >> 8) & 255)) <= tolerance
+            && Math.abs((a & 255) - (b & 255)) <= tolerance;
+    }
 
     static String ambientColorCommand(int id, int rgb, String token) {
         return String.format(Locale.ROOT,

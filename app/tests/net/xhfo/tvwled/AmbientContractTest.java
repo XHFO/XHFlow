@@ -131,6 +131,11 @@ public final class AmbientContractTest {
         check(YeelightAmbient.ambientPowerCommand(1,false,"t").endsWith("\r\n"),
                 "power commands stay CRLF terminated");
 
+        check(YeelightAmbient.sameColor(0x102030,0x102031,2),"a one-level wobble is not re-sent");
+        check(YeelightAmbient.sameColor(0x102030,0x112031,2),"small per-channel drift is ignored");
+        check(!YeelightAmbient.sameColor(0xFF0000,0x00FF00,2),"a real colour change is sent");
+        check(!YeelightAmbient.sameColor(0x102030,-1,2),"the first colour is always sent");
+
         System.out.println("AmbientContractTest PASS (" + checks + " checks, no network or device access)");
     }
 

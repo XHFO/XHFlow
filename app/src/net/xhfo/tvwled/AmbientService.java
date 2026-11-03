@@ -686,6 +686,7 @@ public final class AmbientService extends Service {
         EdgeColorEngine engine;
         ColorCorrection correction;
         BlackBarDetector blackBars;
+        final SampleStabilizer stabilizer=new SampleStabilizer(3);
         int panelWidth,panelHeight;
         long nextBlackBarProbe;
         volatile long blackBarProbeMs;
@@ -748,7 +749,7 @@ public final class AmbientService extends Service {
                 EdgeColorEngine.Region region=config.blackBarsEnabled?blackBars.region():EdgeColorEngine.Region.FULL;
                 EdgeColorEngine.Point[] plan=EdgeColorEngine.plan(region,config.samplingInset,config.pointsPerEdge);
                 int[][] points=EdgeColorEngine.coordinates(plan,panelWidth,panelHeight);
-                int[][] sampled=colors.sample(points);
+                int[][] sampled=stabilizer.push(colors.sample(points));
                 LedColorFrame next=engine.output(sampled,correction,config.brightness,config.softeningEnabled,config.softeningStrength,config.blackFilterEnabled,config.blackFilterThreshold);
                 JSONObject frame=new JSONObject().put("source","screen-edges").put("panelWidth",panelWidth).put("panelHeight",panelHeight).put("samplingInset",config.samplingInset).put("samplingQuality",config.samplingQuality);
                 frame.put("activeRegion",new JSONObject().put("left",region.left).put("top",region.top).put("right",region.right).put("bottom",region.bottom));

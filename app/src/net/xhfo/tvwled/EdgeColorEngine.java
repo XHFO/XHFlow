@@ -28,6 +28,7 @@ final class EdgeColorEngine {
     private boolean fadingToBlack;
     private double fadeRate;
     private long darkSinceMs = -1, brightSinceMs = -1;
+    private double[] smoothedLimits;
     /** Hysteresis: enter the dark fade below 8, leave it only above 14, each held for a moment. */
     private static final int DARK_ENTER = 8, DARK_LEAVE = 14;
     private static final long DARK_HOLD_MS = 100, BRIGHT_HOLD_MS = 70;
@@ -165,7 +166,7 @@ final class EdgeColorEngine {
 
         if(!fadingToBlack){
             boolean darkLongEnough=darkSinceMs>=0&&nowMs-darkSinceMs>=DARK_HOLD_MS;
-            if(darkLongEnough&&currentPeak>24&&darkFadeMs>0){
+            if(enabled&&darkLongEnough&&currentPeak>24&&darkFadeMs>0){
                 // A constant slope is what reads as a fade; an exponential keeps a bright tail and
                 // then snaps, which is exactly the flash to avoid on a cut to black.
                 fadingToBlack=true;fadeRate=currentPeak/(double)Math.max(1,darkFadeMs);
@@ -186,7 +187,29 @@ final class EdgeColorEngine {
                 previous[i]+=delta;
             }
         }
-        if(frame!=null)frame.limit(previous);
+        if(frame!=null){
+            // The black-point ceiling is recomputed from the raw sample every frame, so a one-level
+            // jitter at its knee (peak 24) would swing a dark LED between 4 and 7 levels - visible
+            // as flicker on a still picture. Ease the ceiling like everything else.
+            double[] limits=frame.limits();
+            if(smoothedLimits==null||smoothedLimits.length!=limits.length)smoothedLimits=limits.clone();
+            else{
+                double limitAlpha=enabled&&strength>0?1-Math.exp(-dt/250.0):1;
+                for(int i=0;i<limits.length;i++){
+                    double delta=limits[i]-smoothedLimits[i];
+                    // Small wobble at the knee is eased; a real cut (pure black, or a bright scene)
+                    // must take effect at once, which is also what black-point protection promises.
+                    smoothedLimits[i]+=delta*(Math.abs(delta)>48?1:limitAlpha);
+                }
+            }
+            for(int i=0;i<limits.length;i++){
+                int base=i*3;double peak=Math.max(previous[base],Math.max(previous[base+1],previous[base+2]));
+                if(peak>smoothedLimits[i]&&peak>0){
+                    double factor=smoothedLimits[i]/peak;
+                    for(int c=0;c<3;c++)previous[base+c]*=factor;
+                }
+            }
+        }
         for(int i=0;i<goal.length;i++)out[i]=channel(previous[i]);
         lastOutputMs=nowMs;hasOutputTime=true;return out;
     }
