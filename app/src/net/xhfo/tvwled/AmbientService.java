@@ -224,7 +224,7 @@ public final class AmbientService extends Service {
     }
     private void applySavedConfiguration(){
         configurationGeneration++;configurationLoaded=true;initializationFailed=false;sleepHandled=false;sourceExcludedHandled=false;
-        cancelPower();outputAllowed=false;stopSession("正在读取布局");activeConfig=null;
+        cancelPower();outputAllowed=false;stopSession("正在读取布局",false);activeConfig=null;
         try{
             LayoutConfig config=new LayoutConfig(preferences().getString("layout",""));
             activeConfig=config;
@@ -455,12 +455,17 @@ public final class AmbientService extends Service {
         }
         updateNotification();
     }
-    private void stopSession(String message){
+    private void stopSession(String message){stopSession(message,true);}
+    /**
+     * @param powerOff turn the ambient bar off as well. A configuration reload sets this false so
+     *                 the bar does not blink while the next session is prepared.
+     */
+    private void stopSession(String message,boolean powerOff){
         cancelInitializationRetry();
         synchronized(lifecycleLock){
             Session previous=session;
             session=null;
-            if(previous!=null)previous.close();
+            if(previous!=null)previous.close(powerOff);
             state=message;
             error="";
             publish();
@@ -656,7 +661,21 @@ public final class AmbientService extends Service {
         boolean ownershipNoted;
         Session(LayoutConfig layout){config=layout;generation=configurationGeneration;}
         boolean isCurrent(){return active&&outputAllowed&&session==this&&activeConfig==config&&configurationGeneration==generation&&!destroyed&&!closing;}
-        void close(){active=false;valid=false;sampler.shutdownNow();sender.shutdownNow();ambientLoop.shutdownNow();YeelightAmbient output=ambient;ambient=null;if(output!=null)output.close();if(socket!=null)socket.close();}
+        void close(){close(true);}
+        /**
+         * The bar follows the same on/off conditions as the WLED strip: when sync pauses, stops,
+         * sleeps or the input is excluded, the ambient light is switched off here. The front light
+         * is never touched, since it is the user's desk lighting.
+         */
+        void close(boolean powerOff){
+            active=false;valid=false;sampler.shutdownNow();sender.shutdownNow();ambientLoop.shutdownNow();
+            YeelightAmbient output=ambient;ambient=null;
+            if(output!=null){
+                if(powerOff&&config.ambientEnabled){try{output.setAmbientPower(false);}catch(Exception ignored){}}
+                output.close();
+            }
+            if(socket!=null)socket.close();
+        }
         void initialize(){
             try{
                 if(!isCurrent())return;

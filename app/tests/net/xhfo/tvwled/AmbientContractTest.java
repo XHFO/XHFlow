@@ -122,6 +122,15 @@ public final class AmbientContractTest {
         check(AmbientMixer.average(flat, new int[]{0}, new double[]{0}) == 0,
                 "zero weights never divide by zero");
 
+        check(compact(YeelightAmbient.ambientPowerCommand(9,false,"t")).contains("bg_set_power"),
+                "ambient power uses the bg namespace");
+        check(compact(YeelightAmbient.ambientPowerCommand(9,false,"t")).contains("[\"off\","),
+                "pausing sync switches the ambient light off");
+        check(compact(YeelightAmbient.ambientPowerCommand(9,true,"t")).contains("[\"on\","),
+                "resuming sync switches the ambient light back on");
+        check(YeelightAmbient.ambientPowerCommand(1,false,"t").endsWith("\r\n"),
+                "power commands stay CRLF terminated");
+
         System.out.println("AmbientContractTest PASS (" + checks + " checks, no network or device access)");
     }
 

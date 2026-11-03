@@ -132,9 +132,13 @@ final class YeelightAmbient implements Closeable {
     }
 
     synchronized void setAmbientPower(boolean on) {
-        sendCommand(String.format(Locale.ROOT,
+        sendCommand(ambientPowerCommand(next(), on, token));
+    }
+
+    static String ambientPowerCommand(int id, boolean on, String token) {
+        return String.format(Locale.ROOT,
                 "{ \"id\":%d, \"method\" : \"bg_set_power\", \"params\" : [\"%s\", \"sudden\", 0], \"token\":\"%s\" }\r\n",
-                next(), on ? "on" : "off", token));
+                id, on ? "on" : "off", token);
     }
 
     /**
