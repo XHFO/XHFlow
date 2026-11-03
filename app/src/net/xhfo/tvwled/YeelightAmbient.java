@@ -107,8 +107,9 @@ final class YeelightAmbient implements Closeable {
         if (!connected()) return;
         int color = rgb & 0xFFFFFF, level = clamp(brightnessPercent, 1, 100);
         long now = System.currentTimeMillis();
-        // Power-on can reset the level, and UDP has no receipt: re-assert it now and then.
-        if (level != lastBrightness || now - lastBrightnessAt > 15000) {
+        // The bar drops back to full brightness on power and colour changes, and UDP has no
+        // receipt, so the level rides along with every colour instead of being set once.
+        if (level != lastBrightness || color != lastRgb || now - lastBrightnessAt > 15000) {
             send(ambientBrightnessCommand(next(), level, token));
             lastBrightness = level;
             lastBrightnessAt = now;
