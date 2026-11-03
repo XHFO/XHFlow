@@ -287,7 +287,14 @@ public final class AmbientService extends Service {
         }
         if(powerOperation!=null&&powerOperation.pending)cancelPower();
         if(initializationFailed)return;
-        if(session==null)startSession(config);
+        String preset=config.presetFor(display.inputId);
+        Session active=session;
+        if(active!=null&&!java.util.Objects.equals(active.preset,preset)){
+            // The panel reported a different input: re-open so the bound scene drives the outputs.
+            stopSession("输入源已切换，正在切换场景",false);
+            active=null;
+        }
+        if(active==null)startSession(config);
     }
     static String sourceBlockReason(LayoutConfig config,DisplayEnvironment.Snapshot display){
         if(!config.sourceFilterEnabled)return "";
@@ -334,7 +341,10 @@ public final class AmbientService extends Service {
         }
     }
     private void suspend(String reason,String message){
-        outputAllowed=false;suspendedReason=reason;stopSession(message);
+        // Transient stalls (display state unknown, WLED power readback) keep the bar lit so a
+        // resume does not blink it; real pauses switch it off like the strip.
+        boolean powerOff=!"initializing".equals(reason)&&!"wled_power_pending".equals(reason);
+        outputAllowed=false;suspendedReason=reason;stopSession(message,powerOff);
     }
     private boolean sourceEligible(LayoutConfig config,DisplayEnvironment.Snapshot display){return sourceBlockReason(config,display).isEmpty();}
     private boolean sleepPowerEligible(LayoutConfig config,DisplayEnvironment.Snapshot display){
@@ -450,10 +460,29 @@ public final class AmbientService extends Service {
         synchronized(lifecycleLock){
             if(destroyed||closing||activeConfig!=config)return;
             outputAllowed=true;suspendedReason="initializing";
-            Session next=new Session(config);session=next;lastSession=next;
+            Session next=new Session(config,activeConfig.presetFor(environment==null?null:environment.inputId));session=next;lastSession=next;
             error="";state="正在连接 WLED";publish();next.sampler.execute(next::initialize);
         }
         updateNotification();
+    }
+    /**
+     * Switches the bar off through a fresh session. This must not ride on the streaming session:
+     * a pause tears that session (and its executors) down first, and standby can kill the process
+     * at any moment, so the command goes out on its own thread right away.
+     */
+    private void ambientOff(LayoutConfig config){
+        if(config==null||!config.ambientEnabled)return;
+        final String address=config.ambientAddress;
+        Thread off=new Thread(()->{
+            YeelightAmbient client=null;
+            try{
+                client=new YeelightAmbient(address);
+                if(client.connect(900)){client.setAmbientPower(false);Log.i(TAG,"ambient off sent for "+address);}
+                else Log.w(TAG,"ambient off skipped: no answer from "+address);
+            }catch(Exception failure){Log.w(TAG,"ambient off failed: "+failure);}
+            finally{if(client!=null)client.close();}
+        },"TVWLED-ambient-off");
+        off.setDaemon(true);off.start();
     }
     private void stopSession(String message){stopSession(message,true);}
     /**
@@ -462,6 +491,7 @@ public final class AmbientService extends Service {
      */
     private void stopSession(String message,boolean powerOff){
         cancelInitializationRetry();
+        LayoutConfig stopped=activeConfig;
         synchronized(lifecycleLock){
             Session previous=session;
             session=null;
@@ -470,13 +500,14 @@ public final class AmbientService extends Service {
             error="";
             publish();
         }
+        if(powerOff)ambientOff(stopped);
         updateNotification();
     }
     private void failed(Session owner,String message,Exception failure){
         main.post(()->{
             synchronized(lifecycleLock){
                 if(!owner.isCurrent())return;
-                outputAllowed=false;session=null;owner.close();initializationFailed=true;
+                outputAllowed=false;session=null;owner.close();initializationFailed=true;ambientOff(owner.config);
                 suspendedReason="capture_error";state=message;error=failure.getClass().getSimpleName()+": "+failure.getMessage();
                 if(InitializationRetryPolicy.isTransient(failure)&&initializationConditionsAllow(owner.config,owner.generation))scheduleInitializationRetry(owner.config,owner.generation);
                 else cancelInitializationRetry();
@@ -569,7 +600,7 @@ public final class AmbientService extends Service {
                     .put("fresh",fresh)
                     .put("softeningEnabled",details.config.softeningEnabled).put("softeningStrength",details.config.softeningStrength)
                     .put("colorCorrectionActive",details.correction!=null&&!details.correction.isIdentity())
-                    .put("samplingInset",details.config.samplingInset).put("blackBarsEnabled",details.config.blackBarsEnabled).put("blackBarProbeMs",details.blackBarProbeMs).put("blackBarError",details.blackBarError);
+                    .put("samplingInset",details.config.samplingInset).put("scene",details.preset==null?JSONObject.NULL:details.preset).put("blackBarsEnabled",details.config.blackBarsEnabled).put("blackBarProbeMs",details.blackBarProbeMs).put("blackBarError",details.blackBarError);
             }else status.put("fresh",false).put("samples",0).put("sentFrames",0).put("samplePoints",0);
             snapshot=status.toString();
             if(details!=null)details.lastPublish=SystemClock.elapsedRealtime();
@@ -604,11 +635,13 @@ public final class AmbientService extends Service {
         configurationGeneration++;cancelInitializationRetry();cancelPower();outputAllowed=false;
         if(environmentMonitor!=null)environmentMonitor.close();environmentMonitor=null;environment=null;
         if(powerExecutor!=null)powerExecutor.shutdownNow();powerExecutor=null;
+        LayoutConfig closingConfig=activeConfig;
         activeConfig=null;configurationLoaded=false;suspendedReason="";sourceExcludedHandled=false;sleepHandled=false;
         synchronized(lifecycleLock){
             Session previous=session;session=null;if(previous!=null)previous.close();
             if(server!=null)server.close();server=null;serverRunning=false;
         }
+        ambientOff(closingConfig);
         state=message;
         stopForeground(STOP_FOREGROUND_REMOVE);foreground=false;
         getSystemService(NotificationManager.class).cancel(NOTICE);
@@ -628,6 +661,7 @@ public final class AmbientService extends Service {
     }
     private final class Session {
         final LayoutConfig config;
+        final String preset;
         final long generation;
         final ScheduledExecutorService sampler=Executors.newSingleThreadScheduledExecutor(r->new Thread(r,"TVWLED-color"));
         final ScheduledExecutorService sender=Executors.newSingleThreadScheduledExecutor(r->new Thread(r,"TVWLED-ddp"));
@@ -659,7 +693,7 @@ public final class AmbientService extends Service {
         volatile PreviewFrame previewFrame;
         int sequence=1;
         boolean ownershipNoted;
-        Session(LayoutConfig layout){config=layout;generation=configurationGeneration;}
+        Session(LayoutConfig layout,String scenePreset){config=layout;preset=scenePreset;generation=configurationGeneration;}
         boolean isCurrent(){return active&&outputAllowed&&session==this&&activeConfig==config&&configurationGeneration==generation&&!destroyed&&!closing;}
         void close(){close(true);}
         /**
@@ -669,11 +703,8 @@ public final class AmbientService extends Service {
          */
         void close(boolean powerOff){
             active=false;valid=false;sampler.shutdownNow();sender.shutdownNow();ambientLoop.shutdownNow();
-            YeelightAmbient output=ambient;ambient=null;
-            if(output!=null){
-                if(powerOff&&config.ambientEnabled){try{output.setAmbientPower(false);}catch(Exception ignored){}}
-                output.close();
-            }
+            Log.i(TAG,"session close powerOff="+powerOff+" ambient="+(ambient!=null)+" enabled="+config.ambientEnabled);
+            YeelightAmbient output=ambient;ambient=null;if(output!=null)output.close();
             if(socket!=null)socket.close();
         }
         void initialize(){
@@ -699,7 +730,7 @@ public final class AmbientService extends Service {
                     Log.i(TAG,"sync uid="+android.os.Process.myUid()+" panel="+size[0]+"x"+size[1]+" points="+coordinates.length+" leds="+config.ledCount);
                     sampler.schedule(this::sample,0,TimeUnit.MILLISECONDS);
                     sender.scheduleAtFixedRate(this::send,0,33,TimeUnit.MILLISECONDS);
-                    if(config.ambientEnabled){
+                    if(config.ambientEnabled||ScenePreset.front(preset)){
                         topIndices=config.edgeIndices("top");topWeights=config.edgeWeights("top");
                         ambientLoop.scheduleAtFixedRate(this::ambientTick,0,100,TimeUnit.MILLISECONDS);
                     }
@@ -761,8 +792,9 @@ public final class AmbientService extends Service {
             if(!isCurrent()||!valid||SystemClock.elapsedRealtime()-lastValid>1200)return;
             LedColorFrame goal=target;if(goal==null)return;
             try{
-                int[] rgb=engine.smooth(goal,SystemClock.elapsedRealtime(),config.softeningEnabled,config.softeningStrength);
-                if(config.ambientEnabled)queueAmbient(rgb);
+                int[] rgb=engine.smooth(goal,SystemClock.elapsedRealtime(),config.softeningEnabled,config.softeningStrength,config.fadeDarkMs);
+                if(!ScenePreset.strip(preset))rgb=new int[rgb.length];
+                if(config.ambientEnabled&&ScenePreset.ambient(preset))queueAmbient(rgb);
                 byte[] data=DdpPacket.encode(rgb,sequence);sequence=sequence==15?1:sequence+1;
                 synchronized(lifecycleLock){
                     if(!isCurrent()||!valid||SystemClock.elapsedRealtime()-lastValid>1200)return;
@@ -795,7 +827,15 @@ public final class AmbientService extends Service {
                         return;
                     }
                     ambientError="";ambientKeepAlive=0;ambientHandshakeAt=SystemClock.elapsedRealtime();
-                    if(!ambientPowerOn){client.setAmbientPower(true);ambientPowerOn=true;}
+                    if(!ambientPowerOn){
+                        client.setAmbientPower(ScenePreset.ambient(preset));
+                        if(preset!=null){
+                            // A binding owns the desk lamp; without one the front light is left alone.
+                            client.setMainPower(ScenePreset.front(preset));
+                            if(ScenePreset.front(preset)){client.sendMainBrightness(ScenePreset.frontBrightness(preset));client.setMainCt(ScenePreset.frontCt(preset));}
+                        }
+                        ambientPowerOn=true;
+                    }
                 }
                 // The device only honours the newest session, so another controller can silently
                 // steal it while keep-alive still answers. Re-handshake now and then to win it back.
@@ -804,7 +844,7 @@ public final class AmbientService extends Service {
                     else{ambientError="氛围灯会话刷新失败，将自动重试";return;}
                 }
                 int color=ambientRgb.get();
-                if(color>=0){
+                if(color>=0&&ScenePreset.ambient(preset)){
                     client.sendColor(color,(int)Math.round(config.ambientBrightness*100));
                     if(config.ambientMainLightEnabled)client.sendMainBrightness(ambientMainBrightness);
                     ambientLastSent=SystemClock.elapsedRealtime();ambientFrames++;

@@ -25,6 +25,8 @@ final class EdgeColorEngine {
     private final boolean closed;
     private long lastOutputMs;
     private boolean hasOutputTime;
+    private boolean fadingToBlack;
+    private double fadeRate;
 
     EdgeColorEngine(int ledCount,int[] physicalIndices,String[] edgeNames,double[] edgePositions,boolean closed){
         this(ledCount,physicalIndices,edgeNames,edgePositions,closed,POINTS_PER_EDGE);
@@ -123,20 +125,49 @@ final class EdgeColorEngine {
         return out;
     }
     synchronized int[] smooth(LedColorFrame frame,long nowMs,boolean enabled,double strength){
-        if(frame==null)throw new IllegalArgumentException("Output frame required");
-        return smooth(frame.goal(),nowMs,enabled,strength,frame);
+        return smooth(frame,nowMs,enabled,strength,0);
     }
     /** Called by one sender; exponential time smoothing remains stable across frame rates. */
     synchronized int[] smooth(int[] goal,long nowMs,boolean enabled,double strength){
-        return smooth(goal,nowMs,enabled,strength,null);
+        return smooth(goal,nowMs,enabled,strength,null,0);
     }
-    private int[] smooth(int[] goal,long nowMs,boolean enabled,double strength,LedColorFrame frame){
+    synchronized int[] smooth(int[] goal,long nowMs,boolean enabled,double strength,int darkFadeMs){
+        return smooth(goal,nowMs,enabled,strength,null,darkFadeMs);
+    }
+    synchronized int[] smooth(LedColorFrame frame,long nowMs,boolean enabled,double strength,int darkFadeMs){
+        if(frame==null)throw new IllegalArgumentException("Output frame required");
+        return smooth(frame.goal(),nowMs,enabled,strength,frame,darkFadeMs);
+    }
+    /**
+     * Rising light follows quickly so the strip keeps up with cuts; falling light is released
+     * slowly, and a drop into black walks down over {@code darkFadeMs} instead of snapping. That
+     * asymmetric release is what stops dark scenes and fades to black from strobing.
+     */
+    private int[] smooth(int[] goal,long nowMs,boolean enabled,double strength,LedColorFrame frame,int darkFadeMs){
         if(goal==null||goal.length!=ledCount*3)throw new IllegalArgumentException("Invalid output length");
         unit(strength);for(int value:goal)if(value<0||value>255)throw new IllegalArgumentException("Invalid output RGB");
         double dt=hasOutputTime?Math.max(1,Math.min(1000,nowMs-lastOutputMs)):33;
-        double alpha=!enabled||strength==0?1:1-Math.exp(-dt/(strength*600));
+        double alphaUp=!enabled||strength==0?1:1-Math.exp(-dt/(strength*600));
+        double alphaDown=!enabled||strength==0?1:1-Math.exp(-dt/(strength*600*2.6));
+        int goalPeak=0,currentPeak=0;
+        for(int i=0;i<goal.length;i++){goalPeak=Math.max(goalPeak,goal[i]);currentPeak=Math.max(currentPeak,(int)Math.round(previous[i]));}
+        boolean fallingToBlack=goalPeak<=8&&currentPeak>24&&darkFadeMs>0;
+        if(fallingToBlack){
+            // A constant slope is what reads as a fade; an exponential keeps a bright tail and
+            // then snaps, which is exactly the flash to avoid on a cut to black.
+            if(!fadingToBlack){fadingToBlack=true;fadeRate=currentPeak/(double)Math.max(1,darkFadeMs);}
+        }else if(goalPeak>8){
+            fadingToBlack=false;
+        }
         int[] out=new int[goal.length];
-        for(int i=0;i<goal.length;i++)previous[i]+=(goal[i]-previous[i])*alpha;
+        for(int i=0;i<goal.length;i++){
+            if(fadingToBlack){
+                previous[i]=Math.max(goal[i],previous[i]-fadeRate*dt);
+            }else{
+                double alpha=goal[i]>=previous[i]?alphaUp:alphaDown;
+                previous[i]+=(goal[i]-previous[i])*alpha;
+            }
+        }
         if(frame!=null)frame.limit(previous);
         for(int i=0;i<goal.length;i++)out[i]=channel(previous[i]);
         lastOutputMs=nowMs;hasOutputTime=true;return out;

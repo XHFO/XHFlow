@@ -2476,3 +2476,19 @@ scroll-behavior:auto!important}
 transform:none}
 
 }
+
+.scene-bindings  {
+display:grid;
+gap:var(--space-2);
+margin-top:var(--space-3)}
+
+.scene-row  {
+display:flex;
+align-items:center;
+justify-content:space-between;
+gap:var(--space-3);
+font-size:13px}
+
+.scene-row select  {
+min-width:132px;
+border-radius:var(--radius-control)}

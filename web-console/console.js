@@ -14,6 +14,11 @@
     if(typeof threshold!=='number'||!Number.isFinite(threshold)||threshold<.01||threshold>.5)throw new Error('黑点占比阈值必须在 1%–50% 之间。');
     return {...raw,enabled,threshold};
   }
+  function fadeMs(value){
+    if(value===undefined)return 2000;
+    if(typeof value!=='number'||!Number.isFinite(value)||value<0||value>5000)throw new Error('渐暗时长必须在 0–5000 毫秒之间。');
+    return Math.round(value);
+  }
   function runtimeDefaults(){return {sleepOff:true,sourceFilter:{enabled:false,allowed:[],offWhenExcluded:false}};}
   function normalizeRuntime(raw){
     if(raw===undefined)raw={};if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('运行条件配置格式无效。');
@@ -67,11 +72,26 @@
     const softeningEnabled=rawSoftening.enabled===undefined?true:rawSoftening.enabled,softeningStrength=rawSoftening.strength===undefined?.35:rawSoftening.strength,blackBarsEnabled=rawBlackBars.enabled===undefined?true:rawBlackBars.enabled;
     if(typeof softeningEnabled!=='boolean'||typeof blackBarsEnabled!=='boolean')throw new Error('柔化和跳过黑边选项必须为 true 或 false。');
     if(typeof softeningStrength!=='number'||!Number.isFinite(softeningStrength)||softeningStrength<0||softeningStrength>1)throw new Error('柔化强度必须在 0–1 之间。');
+    const rawFade=rawOutput&&rawOutput.fade!==undefined?rawOutput.fade:{};
+    if(rawFade===null||typeof rawFade!=='object'||Array.isArray(rawFade))throw new Error('渐暗设置格式无效。');
+    const fadeDark=fadeMs(rawFade.darkMs);
+    const rawScenes=raw.scenes&&typeof raw.scenes==='object'&&!Array.isArray(raw.scenes)?raw.scenes:{};
+    const bindingList=rawScenes.bindings===undefined?[]:rawScenes.bindings;
+    if(!Array.isArray(bindingList))throw new Error('场景绑定必须为数组。');
+    const bindings=[];
+    for(const item of bindingList){
+      if(!item||typeof item!=='object')throw new Error('场景绑定项无效。');
+      if(typeof item.source!=='string')throw new Error('场景绑定的接口标识无效。');
+      const source=item.source.trim();if(!/^[0-9]{1,3}$/.test(source))throw new Error('场景绑定的接口标识无效。');
+      if(!['cinema','game','office','night','off'].includes(item.preset))throw new Error('场景预设无效。');
+      if(bindings.some(entry=>entry.source===source))throw new Error('同一接口只能绑定一个场景。');
+      bindings.push({...item,source,preset:item.preset});
+    }
     const autoStart=raw.preferences&&raw.preferences.autoStart!==undefined?raw.preferences.autoStart:true;
     if(typeof autoStart!=='boolean')throw new Error('自动恢复同步选项必须为 true 或 false。');
     const ambient=M.normalizeAmbient(raw.ambient);
     const out=M.exportLayout(layout,device.ledCount);
-    out.controller=device;out.ambient=ambient;out.output={...M.clone(rawOutput),brightness,softening:{...M.clone(rawSoftening),enabled:softeningEnabled,strength:softeningStrength},blackBars:{...M.clone(rawBlackBars),enabled:blackBarsEnabled},blackFilter:normalizeBlackFilter(rawOutput.blackFilter),color:normalizeColor(rawOutput.color)};out.preferences={...M.clone(raw.preferences||{}),autoStart};out.runtime=normalizeRuntime(raw.runtime);
+    out.controller=device;out.ambient=ambient;out.scenes={...M.clone(rawScenes),bindings};out.output={...M.clone(rawOutput),fade:{...M.clone(rawFade),darkMs:fadeDark},brightness,softening:{...M.clone(rawSoftening),enabled:softeningEnabled,strength:softeningStrength},blackBars:{...M.clone(rawBlackBars),enabled:blackBarsEnabled},blackFilter:normalizeBlackFilter(rawOutput.blackFilter),color:normalizeColor(rawOutput.color)};out.preferences={...M.clone(raw.preferences||{}),autoStart};out.runtime=normalizeRuntime(raw.runtime);
     return out;
   }
   function normalizePreview(raw){
@@ -89,13 +109,13 @@
     return {available:points.length>0,ageMs:raw.ageMs,panelWidth:raw.panelWidth,panelHeight:raw.panelHeight,activeRegion:{...region},points,source:'screen-edges'};
   }
   function previewFresh(value,receivedAt,now,online,running,hidden){return !!(value&&value.available&&online&&running&&!hidden&&value.ageMs+Math.max(0,now-receivedAt)<=1500);}
-  const model={stable,address,controller,normalize,normalizeColor,colorDefaults,COLOR_FIELDS,normalizeBlackFilter,normalizeRuntime,runtimeDefaults,confirmedInputs,conditionReady,requestedEnabled,normalizePreview,previewFresh};scope.TVConsoleModel=model;
+  const model={stable,address,controller,fadeMs,normalize,normalizeColor,colorDefaults,COLOR_FIELDS,normalizeBlackFilter,normalizeRuntime,runtimeDefaults,confirmedInputs,conditionReady,requestedEnabled,normalizePreview,previewFresh};scope.TVConsoleModel=model;
   if(typeof module!=='undefined'&&module.exports)module.exports=model;
   if(typeof document==='undefined')return;
 
   const $=id=>document.getElementById(id),P=scope.LayoutPreview,M=scope.LayoutModel;
   const token=new URLSearchParams(location.search).get('token')||'';
-  let ambientValues=M.ambientDefaults(),ambientBusy=false,ambientHint='',ambientFound=[],online=false,busy=false,initializing=false,savedSignature=null,savedDocument=null,pendingApply=false,lastStatus=null,polling=false,initialized=false,brightnessValue=.6,softeningValue=.35,blackFilterValue=.15,colorValues=colorDefaults(),runtimeValues=runtimeDefaults(),inputsSupported=[],sourceOptionsKey='',outputExtras={},preferenceExtras={},command='',previewValue=null,previewReceivedAt=0,previewBusy=false,previewError='';
+  let sceneBindings=[],fadeDarkMs=2000,ambientValues=M.ambientDefaults(),ambientBusy=false,ambientHint='',ambientFound=[],online=false,busy=false,initializing=false,savedSignature=null,savedDocument=null,pendingApply=false,lastStatus=null,polling=false,initialized=false,brightnessValue=.6,softeningValue=.35,blackFilterValue=.15,colorValues=colorDefaults(),runtimeValues=runtimeDefaults(),inputsSupported=[],sourceOptionsKey='',outputExtras={},preferenceExtras={},command='',previewValue=null,previewReceivedAt=0,previewBusy=false,previewError='';
   const AUTOSAVE_DELAY=650,CACHE_KEY='xhflow.editor-draft.v1';
   let saving=false,saveTimer=null,savePhase='',saveError='',saveConflict=false,conflictRemote=null,knownFingerprint='',hasBaseline=false,hasEdits=false,editRevision=0,suppressEdits=0,observedSignature=null,gestureActive=false,addressEditing=false,uncertainWrite=null,verifiedAddress='',cacheError=false;
   function cachedDraft(){try{const value=JSON.parse(scope.localStorage.getItem(CACHE_KEY)||'null');return value&&value.version===1?value:null;}catch(error){return null;}}
@@ -121,7 +141,7 @@
     feedback(message||'电视配置已在其他页面更改。本页调整已保留，请选择要使用的设置。');render();rememberDraft();
   }
   function feedback(text){$('consoleFeedback').textContent=text;}
-  function draft(){const value=P.getMapping();value.controller.address=address($('wledAddress').value);value.output={...M.clone(outputExtras),brightness:brightnessValue,softening:{...(outputExtras.softening||{}),enabled:$('softeningEnabled').checked,strength:softeningValue},blackBars:{...(outputExtras.blackBars||{}),enabled:$('blackBarsEnabled').checked},blackFilter:{...(outputExtras.blackFilter||{}),enabled:$('blackFilterEnabled').checked,threshold:blackFilterValue},color:{...(outputExtras.color||{}),...colorValues}};value.preferences={...M.clone(preferenceExtras),autoStart:$('autoStart').checked};value.runtime=M.clone(runtimeValues);value.ambient=M.clone(ambientValues);return normalize(value,M);}
+  function draft(){const value=P.getMapping();value.controller.address=address($('wledAddress').value);value.output={...M.clone(outputExtras),brightness:brightnessValue,softening:{...(outputExtras.softening||{}),enabled:$('softeningEnabled').checked,strength:softeningValue},blackBars:{...(outputExtras.blackBars||{}),enabled:$('blackBarsEnabled').checked},blackFilter:{...(outputExtras.blackFilter||{}),enabled:$('blackFilterEnabled').checked,threshold:blackFilterValue},fade:{...(outputExtras.fade||{}),darkMs:fadeDarkMs},color:{...(outputExtras.color||{}),...colorValues}};value.preferences={...M.clone(preferenceExtras),autoStart:$('autoStart').checked};value.runtime=M.clone(runtimeValues);value.ambient=M.clone(ambientValues);value.scenes={bindings:M.clone(sceneBindings)};return normalize(value,M);}
   function inspection(){try{const value=draft();return {valid:true,value,signature:stable(value)};}catch(error){return {valid:false,error:error.message,signature:null};}}
   function dirty(){const current=inspection();return saveConflict||!current.valid||current.signature!==savedSignature;}
   function render(){
@@ -148,11 +168,12 @@
     $('ambientScan').disabled=!online||busy||ambientBusy;$('ambientProbe').disabled=!online||busy||ambientBusy;
     const ambientStatus=lastStatus&&lastStatus.ambient;
     $('ambientResult').textContent=ambientHint||(ambientStatus&&ambientStatus.enabled?(ambientStatus.connected?(ambientStatus.frames>0?'氛围灯已连接 · 已发送 '+ambientStatus.frames+' 帧':'氛围灯已连接 · 等待画面输出'):('氛围灯未连接：'+(ambientStatus.error||'等待设备响应'))):'取屏幕顶部颜色，经局域网直接控制挂灯背后的氛围灯。');
+    renderSceneBindings();
     renderConditions();
     document.querySelector('.workspace').inert=busy||(initializing&&!initialized);
     $('brightnessOutput').textContent=Number((brightnessValue*100).toFixed(2))+'%';
     $('softeningOutput').textContent=Number((softeningValue*100).toFixed(2))+'%';$('softeningStrength').disabled=busy||!$('softeningEnabled').checked;
-    $('blackFilterOutput').textContent=Number((blackFilterValue*100).toFixed(2))+'%';$('blackFilterThreshold').disabled=busy||!$('blackFilterEnabled').checked;
+    $('fadeOutput').textContent=(fadeDarkMs/1000).toFixed(1)+' 秒';$('fadeDarkMs').disabled=busy||!$('softeningEnabled').checked;$('blackFilterOutput').textContent=Number((blackFilterValue*100).toFixed(2))+'%';$('blackFilterThreshold').disabled=busy||!$('blackFilterEnabled').checked;
     const saveState=$('saveState');saveState.className='save-state '+(saveConflict||saveError||cacheError?'is-error':!token&&current.valid?'is-saved':changed?'is-dirty':'is-saved');
     if(saveConflict)saveState.textContent='设置冲突 · 等待选择';
     else if(saving)saveState.textContent=savePhase==='applying'?'正在应用…':'正在自动保存…';
@@ -177,6 +198,27 @@
     for(const node of wrap.querySelectorAll('input')){node.checked=filter.allowed.includes(node.value);node.disabled=busy||!filter.enabled;}
     $('sourceListHint').textContent=inputsSupported.length?(online?'接口列表来自电视系统实际确认，改动将自动保存。':'上次读取的接口列表；重连后自动保存有效调整。'):'未取得接口列表，暂不能开启筛选；不会猜测或预填端口名称。';
     const validation=conditionReady(runtimeValues,inputsSupported);$('sourceValidation').textContent=validation.ok?'':validation.message;
+  }
+  function renderSceneBindings(){
+    const wrap=$('sceneBindings'),names={cinema:'观影',game:'游戏',office:'办公',night:'夜间',off:'全关'};
+    if(!inputsSupported.length){wrap.replaceChildren();$('sceneHint').textContent='尚未取得接口列表，连接电视后才能为各信号源绑定场景。';return;}
+    $('sceneHint').textContent='给每个信号源绑定一个场景：办公只开挂灯前向照明，观影/游戏才点亮灯带与氛围灯。未绑定则保持当前行为。';
+    wrap.replaceChildren();
+    for(const item of inputsSupported){
+      const row=document.createElement('label');row.className='scene-row';
+      const name=document.createElement('span');name.textContent=item.label;
+      const select=document.createElement('select');select.disabled=busy;
+      const none=document.createElement('option');none.value='';none.textContent='不绑定';
+      select.append(none);
+      for(const [value,text] of Object.entries(names)){const option=document.createElement('option');option.value=value;option.textContent=text;select.append(option);}
+      select.value=(sceneBindings.find(entry=>entry.source===item.id)||{}).preset||'';
+      select.addEventListener('change',()=>{
+        sceneBindings=sceneBindings.filter(entry=>entry.source!==item.id);
+        if(select.value)sceneBindings.push({source:item.id,preset:select.value});
+        edited();
+      });
+      row.append(name,select);wrap.append(row);
+    }
   }
   function setBusy(value){busy=value;render();}
   function serviceState(connected,message){
@@ -222,7 +264,7 @@
     // Validate the complete document before mutating any visible control.
     suppressEdits++;try{P.setController(normalized.controller);P.setConfig(normalized.layout);}finally{suppressEdits--;}
     $('wledAddress').value=normalized.controller.address;brightnessValue=normalized.output.brightness;$('brightness').value=String(brightnessValue*100);$('autoStart').checked=normalized.preferences.autoStart;
-    outputExtras=M.clone(normalized.output);preferenceExtras=M.clone(normalized.preferences);softeningValue=normalized.output.softening.strength;$('softeningEnabled').checked=normalized.output.softening.enabled;$('softeningStrength').value=String(softeningValue*100);$('blackBarsEnabled').checked=normalized.output.blackBars.enabled;blackFilterValue=normalized.output.blackFilter.threshold;$('blackFilterEnabled').checked=normalized.output.blackFilter.enabled;$('blackFilterThreshold').value=String(blackFilterValue*100);colorValues=M.clone(normalized.output.color);runtimeValues=M.clone(normalized.runtime);ambientValues=M.clone(normalized.ambient);$('ambientEnabled').checked=ambientValues.enabled;$('ambientAddress').value=ambientValues.address;$('ambientBrightness').value=String(Math.round(ambientValues.brightness*100));$('ambientMainLight').checked=ambientValues.mainLight.enabled;$('ambientMainMax').value=String(ambientValues.mainLight.maxBrightness);
+    outputExtras=M.clone(normalized.output);preferenceExtras=M.clone(normalized.preferences);softeningValue=normalized.output.softening.strength;$('softeningEnabled').checked=normalized.output.softening.enabled;$('softeningStrength').value=String(softeningValue*100);$('blackBarsEnabled').checked=normalized.output.blackBars.enabled;blackFilterValue=normalized.output.blackFilter.threshold;fadeDarkMs=normalized.output.fade.darkMs;$('fadeDarkMs').value=String(fadeDarkMs);$('blackFilterEnabled').checked=normalized.output.blackFilter.enabled;$('blackFilterThreshold').value=String(blackFilterValue*100);colorValues=M.clone(normalized.output.color);runtimeValues=M.clone(normalized.runtime);ambientValues=M.clone(normalized.ambient);sceneBindings=M.clone(normalized.scenes.bindings);$('ambientEnabled').checked=ambientValues.enabled;$('ambientAddress').value=ambientValues.address;$('ambientBrightness').value=String(Math.round(ambientValues.brightness*100));$('ambientMainLight').checked=ambientValues.mainLight.enabled;$('ambientMainMax').value=String(ambientValues.mainLight.maxBrightness);
     observedSignature=stable(normalized);return normalized;
   }
   // A configuration and its conditional-write fingerprint must come from one snapshot.
@@ -443,7 +485,7 @@
   $('ambientMainLight').addEventListener('change',()=>{ambientValues.mainLight.enabled=$('ambientMainLight').checked;edited();});
   $('ambientMainMax').addEventListener('input',()=>{ambientValues.mainLight.maxBrightness=$('ambientMainMax').value===''?NaN:Number($('ambientMainMax').value);edited();});
   $('ambientProbe').addEventListener('click',probeAmbient);$('ambientScan').addEventListener('click',scanAmbient);
-  $('brightness').addEventListener('input',()=>{brightnessValue=$('brightness').value===''?NaN:Number($('brightness').value)/100;edited();});$('autoStart').addEventListener('change',edited);$('softeningEnabled').addEventListener('change',edited);$('blackBarsEnabled').addEventListener('change',edited);$('blackFilterEnabled').addEventListener('change',edited);$('blackFilterThreshold').addEventListener('input',()=>{blackFilterValue=$('blackFilterThreshold').value===''?NaN:Number($('blackFilterThreshold').value)/100;edited();});$('softeningStrength').addEventListener('input',()=>{softeningValue=Number($('softeningStrength').value)/100;edited();});
+  $('brightness').addEventListener('input',()=>{brightnessValue=$('brightness').value===''?NaN:Number($('brightness').value)/100;edited();});$('autoStart').addEventListener('change',edited);$('softeningEnabled').addEventListener('change',edited);$('blackBarsEnabled').addEventListener('change',edited);$('blackFilterEnabled').addEventListener('change',edited);$('blackFilterThreshold').addEventListener('input',()=>{blackFilterValue=$('blackFilterThreshold').value===''?NaN:Number($('blackFilterThreshold').value)/100;edited();});$('softeningStrength').addEventListener('input',()=>{softeningValue=Number($('softeningStrength').value)/100;edited();});$('fadeDarkMs').addEventListener('input',()=>{fadeDarkMs=Number($('fadeDarkMs').value);edited();});
   for(const key of Object.keys(COLOR_FIELDS))for(const suffix of ['', '-number'])$('color-'+key+suffix).addEventListener('input',event=>{colorValues[key]=event.target.value===''?NaN:Number(event.target.value);edited();});
   $('resetColor').addEventListener('click',()=>{colorValues=colorDefaults();edited();feedback('已重置高级颜色校正，其他设置保持不变；调整将自动保存。');});
   $('sourceOffWhenExcluded').addEventListener('change',event=>{if(!runtimeValues.sourceFilter.enabled){render();return;}runtimeValues.sourceFilter.offWhenExcluded=event.target.checked;edited();});

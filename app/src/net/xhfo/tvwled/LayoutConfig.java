@@ -18,6 +18,8 @@ final class LayoutConfig {
     final int ambientMainMaxBrightness;
     final String[] allowedSources;
     final double softeningStrength,samplingInset,blackFilterThreshold;
+    final int fadeDarkMs;
+    final String[] sceneSources,scenePresets;
     final double colorSaturation,colorGain,colorOffset,colorGamma,colorRedGain,colorGreenGain,colorBlueGain;
     static final class Led {
         final int index, order;
@@ -67,6 +69,13 @@ final class LayoutConfig {
         if(!(threshold instanceof Number))throw new IllegalArgumentException("黑点占比阈值必须为数字");
         blackFilterThreshold=((Number)threshold).doubleValue();
         if(!Double.isFinite(blackFilterThreshold)||blackFilterThreshold<0.01||blackFilterThreshold>0.5)throw new IllegalArgumentException("黑点占比阈值应在1%至50%之间");
+        JSONObject fade=output==null?null:output.optJSONObject("fade");
+        if(output!=null&&output.has("fade")&&!output.isNull("fade")&&fade==null)throw new IllegalArgumentException("渐暗设置应为对象");
+        Object darkMs=fade==null||!fade.has("darkMs")?2000:fade.get("darkMs");
+        if(!(darkMs instanceof Number))throw new IllegalArgumentException("渐暗时长必须为数字");
+        double darkValue=((Number)darkMs).doubleValue();
+        if(!Double.isFinite(darkValue)||darkValue<0||darkValue>5000)throw new IllegalArgumentException("渐暗时长应在0至5000毫秒之间");
+        fadeDarkMs=(int)Math.round(darkValue);
         JSONObject color=output==null?null:output.optJSONObject("color");
         if(output!=null&&output.has("color")&&!output.isNull("color")&&color==null)throw new IllegalArgumentException("颜色校正应为对象");
         colorSaturation=colorValue(color,"saturation",1,0,2);colorGain=colorValue(color,"gain",1,0,2);
@@ -117,6 +126,22 @@ final class LayoutConfig {
         double maxValue=((Number)mainMax).doubleValue();
         if(!Double.isFinite(maxValue)||maxValue<1||maxValue>100||maxValue!=Math.rint(maxValue))throw new IllegalArgumentException("主灯亮度上限应为1%至100%的整数");
         ambientMainMaxBrightness=(int)maxValue;
+        JSONObject scenes=root.optJSONObject("scenes");
+        if(root.has("scenes")&&!root.isNull("scenes")&&scenes==null)throw new IllegalArgumentException("场景绑定应为对象");
+        JSONArray bindings=scenes==null?null:scenes.optJSONArray("bindings");
+        if(scenes!=null&&scenes.has("bindings")&&!scenes.isNull("bindings")&&bindings==null)throw new IllegalArgumentException("场景绑定应为数组");
+        sceneSources=new String[bindings==null?0:bindings.length()];scenePresets=new String[sceneSources.length];
+        java.util.HashSet<String> sceneSeen=new java.util.HashSet<>();
+        for(int i=0;i<sceneSources.length;i++){
+            Object item=bindings.get(i);
+            if(!(item instanceof JSONObject))throw new IllegalArgumentException("场景绑定项应为对象");
+            JSONObject binding=(JSONObject)item;
+            Object source=binding.opt("source"),preset=binding.opt("preset");
+            if(!(source instanceof String)||!((String)source).matches("[0-9]{1,3}"))throw new IllegalArgumentException("场景绑定的接口ID无效");
+            if(!sceneSeen.add((String)source))throw new IllegalArgumentException("同一接口只能绑定一个场景");
+            if(!(preset instanceof String)||!ScenePreset.known((String)preset))throw new IllegalArgumentException("场景预设无效");
+            sceneSources[i]=(String)source;scenePresets[i]=(String)preset;
+        }
         raw=root.toString();fingerprint=ConfigFingerprint.of(root);
     }
     /**
@@ -142,6 +167,12 @@ final class LayoutConfig {
         int[] indices=new int[leds.length];String[] edges=new String[leds.length];double[] positions=new double[leds.length];
         for(int i=0;i<leds.length;i++){indices[i]=leds[i].index;edges[i]=leds[i].edge;positions[i]=leds[i].u;}
         return new EdgeColorEngine(ledCount,indices,edges,positions,closed,pointsPerEdge);
+    }
+    /** Null when the input has no binding: the strip keeps its default behaviour. */
+    String presetFor(String source){
+        if(source==null)return null;
+        for(int i=0;i<sceneSources.length;i++)if(sceneSources[i].equals(source))return scenePresets[i];
+        return null;
     }
     boolean allows(String source){for(String allowed:allowedSources)if(allowed.equals(source))return true;return false;}
     private static boolean booleanValue(JSONObject object,String name,boolean fallback) throws Exception {

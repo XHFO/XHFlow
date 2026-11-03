@@ -194,7 +194,7 @@
     const result=evaluate(config,budget);
     if(result.errors.length) throw new Error(result.errors.join(' '));
     const saved=clone(config); delete saved.view;saved.geometry=clone(geometry(config));saved.sampling={...(saved.sampling||{}),inset:sampling(config),quality:samplingQuality(config)};
-    return {schema:'xh-tv-wled-layout/v1', coordinateSystem:'screen-front-normalized',geometryCoordinateSystem:'scene-normalized',positionCoordinateSystem:'strip-front-normalized', ambient:clone(config.ambient||ambientDefaults()), controller:{address:'192.168.1.50',name:'WLED 示例',ledCount:budget},layout:saved,
+    return {schema:'xh-tv-wled-layout/v1', coordinateSystem:'screen-front-normalized',geometryCoordinateSystem:'scene-normalized',positionCoordinateSystem:'strip-front-normalized', ambient:clone(config.ambient||ambientDefaults()),scenes:clone(config.scenes||{bindings:[]}), controller:{address:'192.168.1.50',name:'WLED 示例',ledCount:budget},layout:saved,
       leds:result.leds.map(led=>({order:led.order,wledIndex:led.physicalIndex,edge:led.edge,position:led.position,sample:led.sample})),
       unassignedIndices:Array.from({length:budget},(_,i)=>i).filter(i=>i<config.offset||i>=config.offset+result.total)};
   }

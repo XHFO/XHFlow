@@ -120,6 +120,20 @@ final class YeelightAmbient implements Closeable {
         lastCommandAt = System.currentTimeMillis();
     }
 
+    /** Switches the front light, used by presets that want the desk lamp on or off. */
+    synchronized void setMainPower(boolean on) {
+        sendCommand(String.format(Locale.ROOT,
+                "{ \"id\":%d, \"method\" : \"set_power\", \"params\" : [\"%s\", \"smooth\", 500], \"token\":\"%s\" }\r\n",
+                next(), on ? "on" : "off", token));
+    }
+
+    /** Colour temperature in kelvin; firmware accepts 1700-6500. */
+    synchronized void setMainCt(int kelvin) {
+        sendCommand(String.format(Locale.ROOT,
+                "{ \"id\":%d, \"method\" : \"set_ct_abx\", \"params\" : [%d, \"smooth\", 500], \"token\":\"%s\" }\r\n",
+                next(), Math.max(1700, Math.min(6500, kelvin)), token));
+    }
+
     /** Front light brightness only; the colour temperature and power state are left alone. */
     synchronized void sendMainBrightness(int percent) {
         if (!connected()) return;
@@ -132,6 +146,7 @@ final class YeelightAmbient implements Closeable {
     }
 
     synchronized void setAmbientPower(boolean on) {
+        Log.i(TAG,"yeelight power "+(on?"on":"off")+" connected="+connected());
         sendCommand(ambientPowerCommand(next(), on, token));
     }
 
@@ -192,13 +207,20 @@ final class YeelightAmbient implements Closeable {
     }
 
     private void send(String message) {
+        byte[] data = message.getBytes(StandardCharsets.UTF_8);
         try {
             DatagramSocket active = socket;
-            if (active == null || active.isClosed()) return;
-            byte[] data = message.getBytes(StandardCharsets.UTF_8);
-            active.send(new DatagramPacket(data, data.length, target, LAN_PORT));
-        } catch (Exception ignored) {
-            // UDP has no delivery receipt; the keep-alive loop re-establishes the token.
+            if (active != null && !active.isClosed()) {
+                active.send(new DatagramPacket(data, data.length, target, LAN_PORT));
+                return;
+            }
+            // A concurrent re-handshake can replace the socket between closeSocket() and the new
+            // one; a one-shot socket keeps a late "power off" from being dropped on the floor.
+            try (DatagramSocket fallback = new DatagramSocket()) {
+                fallback.send(new DatagramPacket(data, data.length, target, LAN_PORT));
+            }
+        } catch (Exception failure) {
+            Log.w(TAG, "yeelight send failed: " + failure.getMessage());
         }
     }
 
