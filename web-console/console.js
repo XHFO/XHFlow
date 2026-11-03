@@ -115,7 +115,7 @@
 
   const $=id=>document.getElementById(id),P=scope.LayoutPreview,M=scope.LayoutModel;
   const token=new URLSearchParams(location.search).get('token')||'';
-  let sceneBindings=[],fadeDarkMs=2000,ambientValues=M.ambientDefaults(),ambientBusy=false,ambientHint='',ambientFound=[],online=false,busy=false,initializing=false,savedSignature=null,savedDocument=null,pendingApply=false,lastStatus=null,polling=false,initialized=false,brightnessValue=.6,softeningValue=.35,blackFilterValue=.15,colorValues=colorDefaults(),runtimeValues=runtimeDefaults(),inputsSupported=[],sourceOptionsKey='',outputExtras={},preferenceExtras={},command='',previewValue=null,previewReceivedAt=0,previewBusy=false,previewError='';
+  let sceneBindings=[],sceneKey='',fadeDarkMs=2000,ambientValues=M.ambientDefaults(),ambientBusy=false,ambientHint='',ambientFound=[],online=false,busy=false,initializing=false,savedSignature=null,savedDocument=null,pendingApply=false,lastStatus=null,polling=false,initialized=false,brightnessValue=.6,softeningValue=.35,blackFilterValue=.15,colorValues=colorDefaults(),runtimeValues=runtimeDefaults(),inputsSupported=[],sourceOptionsKey='',outputExtras={},preferenceExtras={},command='',previewValue=null,previewReceivedAt=0,previewBusy=false,previewError='';
   const AUTOSAVE_DELAY=650,CACHE_KEY='xhflow.editor-draft.v1';
   let saving=false,saveTimer=null,savePhase='',saveError='',saveConflict=false,conflictRemote=null,knownFingerprint='',hasBaseline=false,hasEdits=false,editRevision=0,suppressEdits=0,observedSignature=null,gestureActive=false,addressEditing=false,uncertainWrite=null,verifiedAddress='',cacheError=false;
   function cachedDraft(){try{const value=JSON.parse(scope.localStorage.getItem(CACHE_KEY)||'null');return value&&value.version===1?value:null;}catch(error){return null;}}
@@ -201,23 +201,32 @@
   }
   function renderSceneBindings(){
     const wrap=$('sceneBindings'),names={cinema:'观影',game:'游戏',office:'办公',night:'夜间',off:'全关'};
-    if(!inputsSupported.length){wrap.replaceChildren();$('sceneHint').textContent='尚未取得接口列表，连接电视后才能为各信号源绑定场景。';return;}
+    if(!inputsSupported.length){wrap.replaceChildren();sceneKey='';$('sceneHint').textContent='尚未取得接口列表，连接电视后才能为各信号源绑定场景。';return;}
     $('sceneHint').textContent='给每个信号源绑定一个场景：办公只开挂灯前向照明，观影/游戏才点亮灯带与氛围灯。未绑定则保持当前行为。';
-    wrap.replaceChildren();
-    for(const item of inputsSupported){
-      const row=document.createElement('label');row.className='scene-row';
-      const name=document.createElement('span');name.textContent=item.label;
-      const select=document.createElement('select');select.disabled=busy;
-      const none=document.createElement('option');none.value='';none.textContent='不绑定';
-      select.append(none);
-      for(const [value,text] of Object.entries(names)){const option=document.createElement('option');option.value=value;option.textContent=text;select.append(option);}
-      select.value=(sceneBindings.find(entry=>entry.source===item.id)||{}).preset||'';
-      select.addEventListener('change',()=>{
-        sceneBindings=sceneBindings.filter(entry=>entry.source!==item.id);
-        if(select.value)sceneBindings.push({source:item.id,preset:select.value});
-        edited();
-      });
-      row.append(name,select);wrap.append(row);
+    const key=stable(inputsSupported);
+    if(key!==sceneKey){
+      sceneKey=key;wrap.replaceChildren();
+      for(const item of inputsSupported){
+        const row=document.createElement('div');row.className='scene-row';
+        const name=document.createElement('span');name.className='scene-name';name.textContent=item.label;
+        const select=document.createElement('select');select.dataset.source=item.id;select.setAttribute('aria-label',item.label+' 的场景');
+        const none=document.createElement('option');none.value='';none.textContent='不绑定';
+        select.append(none);
+        for(const [value,text] of Object.entries(names)){const option=document.createElement('option');option.value=value;option.textContent=text;select.append(option);}
+        select.addEventListener('change',()=>{
+          sceneBindings=sceneBindings.filter(entry=>entry.source!==item.id);
+          if(select.value)sceneBindings.push({source:item.id,preset:select.value});
+          edited();
+        });
+        row.append(name,select);wrap.append(row);
+      }
+    }
+    // Only the value is refreshed on later renders: rebuilding a row while its native popup is
+    // open is what made the menu collapse before a choice could be made.
+    for(const select of wrap.querySelectorAll('select')){
+      select.disabled=busy;
+      const current=(sceneBindings.find(entry=>entry.source===select.dataset.source)||{}).preset||'';
+      if(select.value!==current)select.value=current;
     }
   }
   function setBusy(value){busy=value;render();}
