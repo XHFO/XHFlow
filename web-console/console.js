@@ -69,8 +69,9 @@
     if(typeof softeningStrength!=='number'||!Number.isFinite(softeningStrength)||softeningStrength<0||softeningStrength>1)throw new Error('柔化强度必须在 0–1 之间。');
     const autoStart=raw.preferences&&raw.preferences.autoStart!==undefined?raw.preferences.autoStart:true;
     if(typeof autoStart!=='boolean')throw new Error('自动恢复同步选项必须为 true 或 false。');
+    const ambient=M.normalizeAmbient(raw.ambient);
     const out=M.exportLayout(layout,device.ledCount);
-    out.controller=device;out.output={...M.clone(rawOutput),brightness,softening:{...M.clone(rawSoftening),enabled:softeningEnabled,strength:softeningStrength},blackBars:{...M.clone(rawBlackBars),enabled:blackBarsEnabled},blackFilter:normalizeBlackFilter(rawOutput.blackFilter),color:normalizeColor(rawOutput.color)};out.preferences={...M.clone(raw.preferences||{}),autoStart};out.runtime=normalizeRuntime(raw.runtime);
+    out.controller=device;out.ambient=ambient;out.output={...M.clone(rawOutput),brightness,softening:{...M.clone(rawSoftening),enabled:softeningEnabled,strength:softeningStrength},blackBars:{...M.clone(rawBlackBars),enabled:blackBarsEnabled},blackFilter:normalizeBlackFilter(rawOutput.blackFilter),color:normalizeColor(rawOutput.color)};out.preferences={...M.clone(raw.preferences||{}),autoStart};out.runtime=normalizeRuntime(raw.runtime);
     return out;
   }
   function normalizePreview(raw){
@@ -94,7 +95,7 @@
 
   const $=id=>document.getElementById(id),P=scope.LayoutPreview,M=scope.LayoutModel;
   const token=new URLSearchParams(location.search).get('token')||'';
-  let online=false,busy=false,initializing=false,savedSignature=null,savedDocument=null,pendingApply=false,lastStatus=null,polling=false,initialized=false,brightnessValue=.6,softeningValue=.35,blackFilterValue=.15,colorValues=colorDefaults(),runtimeValues=runtimeDefaults(),inputsSupported=[],sourceOptionsKey='',outputExtras={},preferenceExtras={},command='',previewValue=null,previewReceivedAt=0,previewBusy=false,previewError='';
+  let ambientValues=M.ambientDefaults(),ambientBusy=false,ambientHint='',ambientFound=[],online=false,busy=false,initializing=false,savedSignature=null,savedDocument=null,pendingApply=false,lastStatus=null,polling=false,initialized=false,brightnessValue=.6,softeningValue=.35,blackFilterValue=.15,colorValues=colorDefaults(),runtimeValues=runtimeDefaults(),inputsSupported=[],sourceOptionsKey='',outputExtras={},preferenceExtras={},command='',previewValue=null,previewReceivedAt=0,previewBusy=false,previewError='';
   const AUTOSAVE_DELAY=650,CACHE_KEY='xhflow.editor-draft.v1';
   let saving=false,saveTimer=null,savePhase='',saveError='',saveConflict=false,conflictRemote=null,knownFingerprint='',hasBaseline=false,hasEdits=false,editRevision=0,suppressEdits=0,observedSignature=null,gestureActive=false,addressEditing=false,uncertainWrite=null,verifiedAddress='',cacheError=false;
   function cachedDraft(){try{const value=JSON.parse(scope.localStorage.getItem(CACHE_KEY)||'null');return value&&value.version===1?value:null;}catch(error){return null;}}
@@ -120,7 +121,7 @@
     feedback(message||'电视配置已在其他页面更改。本页调整已保留，请选择要使用的设置。');render();rememberDraft();
   }
   function feedback(text){$('consoleFeedback').textContent=text;}
-  function draft(){const value=P.getMapping();value.controller.address=address($('wledAddress').value);value.output={...M.clone(outputExtras),brightness:brightnessValue,softening:{...(outputExtras.softening||{}),enabled:$('softeningEnabled').checked,strength:softeningValue},blackBars:{...(outputExtras.blackBars||{}),enabled:$('blackBarsEnabled').checked},blackFilter:{...(outputExtras.blackFilter||{}),enabled:$('blackFilterEnabled').checked,threshold:blackFilterValue},color:{...(outputExtras.color||{}),...colorValues}};value.preferences={...M.clone(preferenceExtras),autoStart:$('autoStart').checked};value.runtime=M.clone(runtimeValues);return normalize(value,M);}
+  function draft(){const value=P.getMapping();value.controller.address=address($('wledAddress').value);value.output={...M.clone(outputExtras),brightness:brightnessValue,softening:{...(outputExtras.softening||{}),enabled:$('softeningEnabled').checked,strength:softeningValue},blackBars:{...(outputExtras.blackBars||{}),enabled:$('blackBarsEnabled').checked},blackFilter:{...(outputExtras.blackFilter||{}),enabled:$('blackFilterEnabled').checked,threshold:blackFilterValue},color:{...(outputExtras.color||{}),...colorValues}};value.preferences={...M.clone(preferenceExtras),autoStart:$('autoStart').checked};value.runtime=M.clone(runtimeValues);value.ambient=M.clone(ambientValues);return normalize(value,M);}
   function inspection(){try{const value=draft();return {valid:true,value,signature:stable(value)};}catch(error){return {valid:false,error:error.message,signature:null};}}
   function dirty(){const current=inspection();return saveConflict||!current.valid||current.signature!==savedSignature;}
   function render(){
@@ -136,11 +137,17 @@
     $('syncSwitchLabel').textContent=!online?'总开关状态未知':command==='stopping'?'正在关闭…':command==='starting'?'正在开启…':command==='applying'?'正在应用…':requestedLabel;
     $('applyChanges').hidden=!online||requested!==true||!pendingApply||saving;$('applyChanges').disabled=!online||busy||saving||!canStart;
     $('pendingApplyNotice').hidden=!online||!pendingApply;$('pendingApplyNotice').textContent=requested===true?'电视中有已保存但尚未应用的设置。'+(changed?'本页调整将自动保存并应用。':'可重试应用已保存的设置。'):'已保存的设置将在下次开启同步时生效。';
-    $('saveHint').textContent=cacheError&&(!token||!online)?'浏览器暂不能保留本页调整，请保持页面打开或导出配置。':!token?'演示中的有效配置自动保存在此浏览器，不会控制真实灯带。':saveConflict?'本页与电视设置不一致，自动保存已暂停。':saveError?saveError:!current.valid?'请补全输入；电视继续使用上次有效设置。':!conditions.ok?conditions.message:requested===true?'调整停下后自动保存并应用；连续拖动时不会中断编辑。':'调整自动保存到电视；总开关关闭时保持关闭。';
+    $('saveHint').textContent=cacheError&&(!token||!online)?'浏览器暂不能保留本页调整，请保持页面打开或导出配置。':!token?'演示中的有效配置自动保存在此浏览器，不会控制真实灯带。':saveConflict?'本页与电视设置不一致，自动保存已暂停。':saveError?saveError:!current.valid?(current.error?current.error+' 电视继续使用上次有效设置。':'请补全输入；电视继续使用上次有效设置。'):!conditions.ok?conditions.message:requested===true?'调整停下后自动保存并应用；连续拖动时不会中断编辑。':'调整自动保存到电视；总开关关闭时保持关闭。';
     $('probe').disabled=!online||busy;$('reconnect').disabled=busy;
     for(const id of ['wledAddress','brightness','autoStart','softeningEnabled','softeningStrength','blackBarsEnabled','blackFilterEnabled','blackFilterThreshold'])$(id).disabled=busy;
     for(const key of Object.keys(COLOR_FIELDS)){for(const suffix of ['', '-number']){const node=$('color-'+key+suffix);node.disabled=busy;if(document.activeElement!==node&&Number.isFinite(colorValues[key]))node.value=String(colorValues[key]);}}$('resetColor').disabled=busy;
     try{normalizeColor(colorValues);$('colorValidation').textContent='';}catch(error){$('colorValidation').textContent=error.message;}
+    $('ambientEnabled').disabled=busy;$('ambientAddress').disabled=busy||!ambientValues.enabled;
+    $('ambientBrightness').disabled=busy||!ambientValues.enabled;$('ambientBrightnessOutput').textContent=Math.round((Number.isFinite(ambientValues.brightness)?ambientValues.brightness:0)*100)+'%';
+    $('ambientMainLight').disabled=busy||!ambientValues.enabled;$('ambientMainMax').disabled=busy||!ambientValues.enabled||!ambientValues.mainLight.enabled;
+    $('ambientScan').disabled=!online||busy||ambientBusy;$('ambientProbe').disabled=!online||busy||ambientBusy;
+    const ambientStatus=lastStatus&&lastStatus.ambient;
+    $('ambientResult').textContent=ambientHint||(ambientStatus&&ambientStatus.enabled?(ambientStatus.connected?(ambientStatus.frames>0?'氛围灯已连接 · 已发送 '+ambientStatus.frames+' 帧':'氛围灯已连接 · 等待画面输出'):('氛围灯未连接：'+(ambientStatus.error||'等待设备响应'))):'取屏幕顶部颜色，经局域网直接控制挂灯背后的氛围灯。');
     renderConditions();
     document.querySelector('.workspace').inert=busy||(initializing&&!initialized);
     $('brightnessOutput').textContent=Number((brightnessValue*100).toFixed(2))+'%';
@@ -215,7 +222,7 @@
     // Validate the complete document before mutating any visible control.
     suppressEdits++;try{P.setController(normalized.controller);P.setConfig(normalized.layout);}finally{suppressEdits--;}
     $('wledAddress').value=normalized.controller.address;brightnessValue=normalized.output.brightness;$('brightness').value=String(brightnessValue*100);$('autoStart').checked=normalized.preferences.autoStart;
-    outputExtras=M.clone(normalized.output);preferenceExtras=M.clone(normalized.preferences);softeningValue=normalized.output.softening.strength;$('softeningEnabled').checked=normalized.output.softening.enabled;$('softeningStrength').value=String(softeningValue*100);$('blackBarsEnabled').checked=normalized.output.blackBars.enabled;blackFilterValue=normalized.output.blackFilter.threshold;$('blackFilterEnabled').checked=normalized.output.blackFilter.enabled;$('blackFilterThreshold').value=String(blackFilterValue*100);colorValues=M.clone(normalized.output.color);runtimeValues=M.clone(normalized.runtime);
+    outputExtras=M.clone(normalized.output);preferenceExtras=M.clone(normalized.preferences);softeningValue=normalized.output.softening.strength;$('softeningEnabled').checked=normalized.output.softening.enabled;$('softeningStrength').value=String(softeningValue*100);$('blackBarsEnabled').checked=normalized.output.blackBars.enabled;blackFilterValue=normalized.output.blackFilter.threshold;$('blackFilterEnabled').checked=normalized.output.blackFilter.enabled;$('blackFilterThreshold').value=String(blackFilterValue*100);colorValues=M.clone(normalized.output.color);runtimeValues=M.clone(normalized.runtime);ambientValues=M.clone(normalized.ambient);$('ambientEnabled').checked=ambientValues.enabled;$('ambientAddress').value=ambientValues.address;$('ambientBrightness').value=String(Math.round(ambientValues.brightness*100));$('ambientMainLight').checked=ambientValues.mainLight.enabled;$('ambientMainMax').value=String(ambientValues.mainLight.maxBrightness);
     observedSignature=stable(normalized);return normalized;
   }
   // A configuration and its conditional-write fingerprint must come from one snapshot.
@@ -387,6 +394,38 @@
     }catch(error){$('probeResult').textContent='检测未成功：'+error.message;feedback('检测不会改变实际灯光，请核对 WLED 地址。');}
     finally{setBusy(false);edited();}
   }
+  function applyAmbientDevice(device){
+    ambientValues.enabled=true;ambientValues.address=String(device.address||'');ambientValues.model=String(device.model||'');
+    $('ambientEnabled').checked=true;$('ambientAddress').value=ambientValues.address;
+    ambientHint='已选择 '+(ambientValues.model||'Yeelight')+' · '+ambientValues.address;
+    $('ambientDevices').replaceChildren();edited();
+  }
+  function renderAmbientDevices(){
+    const wrap=$('ambientDevices');wrap.replaceChildren();
+    ambientFound.slice(0,4).forEach(device=>{const button=document.createElement('button');button.type='button';button.className='quiet-button';button.textContent=(device.model||'Yeelight')+' · '+device.address;button.addEventListener('click',()=>applyAmbientDevice(device));wrap.append(button);});
+  }
+  async function probeAmbient(){
+    if(!online||busy||ambientBusy)return;
+    let target;try{target=M.privateIpv4(ambientValues.address,'Yeelight');}catch(error){ambientHint=error.message;render();return;}
+    ambientBusy=true;setBusy(true);ambientHint='正在检测 Yeelight…';render();
+    try{
+      const result=await api('/api/probe','POST',{address:target,type:'yeelight'});
+      ambientHint=result.ambient===false?'设备可访问，但未确认背后氛围灯能力。':'已找到 Yeelight 氛围灯'+(result.model?' · '+result.model:'');
+      if(result.model){ambientValues.model=String(result.model);edited();}
+    }catch(error){ambientHint='检测未成功：'+error.message;}
+    finally{ambientBusy=false;setBusy(false);}
+  }
+  async function scanAmbient(){
+    if(!online||busy||ambientBusy)return;
+    ambientBusy=true;setBusy(true);ambientHint='正在扫描局域网中的 Yeelight…';$('ambientDevices').replaceChildren();render();
+    try{
+      const result=await api('/api/discover','POST',{}),devices=(result.devices||[]).filter(device=>device&&device.ambient);
+      if(!devices.length){ambientHint='未发现支持氛围灯控制的 Yeelight。请确认挂灯已开启局域网控制，并与电视处于同一局域网。';return;}
+      ambientFound=devices;ambientHint='找到 '+devices.length+' 台支持氛围灯的 Yeelight。';applyAmbientDevice(devices[0]);
+      if(devices.length>1)renderAmbientDevices();
+    }catch(error){ambientHint='扫描未成功：'+error.message;}
+    finally{ambientBusy=false;setBusy(false);}
+  }
   function exportFile(){
     try{
       const value=draft(),blob=new Blob([JSON.stringify(value,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),link=document.createElement('a');
@@ -398,6 +437,12 @@
   $('wledAddress').addEventListener('input',()=>{addressEditing=true;suppressEdits++;try{P.setController({address:$('wledAddress').value.trim()});}finally{suppressEdits--;}$('probeResult').textContent='完成地址输入后自动检测并保存。';edited();});
   function finishAddress(){addressEditing=false;edited();scheduleAutosave();}
   $('wledAddress').addEventListener('blur',finishAddress);$('wledAddress').addEventListener('change',finishAddress);$('wledAddress').addEventListener('keydown',event=>{if(event.key==='Enter'){finishAddress();}});
+  $('ambientEnabled').addEventListener('change',()=>{ambientValues.enabled=$('ambientEnabled').checked;ambientHint='';edited();});
+  $('ambientAddress').addEventListener('input',()=>{ambientValues.address=$('ambientAddress').value.trim();ambientHint='';edited();});
+  $('ambientBrightness').addEventListener('input',()=>{ambientValues.brightness=Number($('ambientBrightness').value)/100;edited();});
+  $('ambientMainLight').addEventListener('change',()=>{ambientValues.mainLight.enabled=$('ambientMainLight').checked;edited();});
+  $('ambientMainMax').addEventListener('input',()=>{ambientValues.mainLight.maxBrightness=$('ambientMainMax').value===''?NaN:Number($('ambientMainMax').value);edited();});
+  $('ambientProbe').addEventListener('click',probeAmbient);$('ambientScan').addEventListener('click',scanAmbient);
   $('brightness').addEventListener('input',()=>{brightnessValue=$('brightness').value===''?NaN:Number($('brightness').value)/100;edited();});$('autoStart').addEventListener('change',edited);$('softeningEnabled').addEventListener('change',edited);$('blackBarsEnabled').addEventListener('change',edited);$('blackFilterEnabled').addEventListener('change',edited);$('blackFilterThreshold').addEventListener('input',()=>{blackFilterValue=$('blackFilterThreshold').value===''?NaN:Number($('blackFilterThreshold').value)/100;edited();});$('softeningStrength').addEventListener('input',()=>{softeningValue=Number($('softeningStrength').value)/100;edited();});
   for(const key of Object.keys(COLOR_FIELDS))for(const suffix of ['', '-number'])$('color-'+key+suffix).addEventListener('input',event=>{colorValues[key]=event.target.value===''?NaN:Number(event.target.value);edited();});
   $('resetColor').addEventListener('click',()=>{colorValues=colorDefaults();edited();feedback('已重置高级颜色校正，其他设置保持不变；调整将自动保存。');});

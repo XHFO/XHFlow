@@ -12,6 +12,10 @@ final class LayoutConfig {
     final Led[] leds;
     final float brightness;
     final boolean softeningEnabled,blackBarsEnabled,blackFilterEnabled,closed,sleepOff,sourceFilterEnabled,sourceOffWhenExcluded;
+    final boolean ambientEnabled,ambientMainLightEnabled;
+    final String ambientAddress,ambientModel;
+    final double ambientBrightness;
+    final int ambientMainMaxBrightness;
     final String[] allowedSources;
     final double softeningStrength,samplingInset,blackFilterThreshold;
     final double colorSaturation,colorGain,colorOffset,colorGamma,colorRedGain,colorGreenGain,colorBlueGain;
@@ -89,7 +93,37 @@ final class LayoutConfig {
         allowedSources=new String[allowed==null?0:allowed.length()];java.util.HashSet<String> seen=new java.util.HashSet<>();
         for(int i=0;i<allowedSources.length;i++){Object id=allowed.get(i);if(!(id instanceof String)||!((String)id).matches("[0-9]{1,3}")||!seen.add((String)id))throw new IllegalArgumentException("接口ID必须为不重复的字符串");allowedSources[i]=(String)id;}
         if(sourceFilterEnabled&&allowedSources.length==0)throw new IllegalArgumentException("开启接口筛选时至少选择一个接口");
+        JSONObject ambient=root.optJSONObject("ambient");
+        if(root.has("ambient")&&!root.isNull("ambient")&&ambient==null)throw new IllegalArgumentException("Yeelight 氛围灯配置应为对象");
+        ambientEnabled=booleanValue(ambient,"enabled",false);
+        Object ambientAddressValue=ambient==null?null:ambient.opt("address");
+        ambientAddress=ambientAddressValue instanceof String?((String)ambientAddressValue).trim():"";
+        if(ambientEnabled){
+            if(ambientAddress.isEmpty())throw new IllegalArgumentException("开启 Yeelight 氛围灯时请填写设备地址");
+            validateAddress(ambientAddress);
+        }else if(!ambientAddress.isEmpty())validateAddress(ambientAddress);
+        Object modelValue=ambient==null?null:ambient.opt("model");
+        ambientModel=modelValue instanceof String?((String)modelValue).trim():"";
+        if(ambientModel.length()>64)throw new IllegalArgumentException("Yeelight 型号名称过长");
+        Object ambientBrightnessValue=ambient==null||!ambient.has("brightness")?0.8:ambient.get("brightness");
+        if(!(ambientBrightnessValue instanceof Number))throw new IllegalArgumentException("氛围灯亮度必须为数字");
+        ambientBrightness=((Number)ambientBrightnessValue).doubleValue();
+        if(!Double.isFinite(ambientBrightness)||ambientBrightness<0||ambientBrightness>1)throw new IllegalArgumentException("氛围灯亮度应在0%至100%之间");
+        JSONObject mainLight=ambient==null?null:ambient.optJSONObject("mainLight");
+        if(ambient!=null&&ambient.has("mainLight")&&!ambient.isNull("mainLight")&&mainLight==null)throw new IllegalArgumentException("主灯联动应为对象");
+        ambientMainLightEnabled=booleanValue(mainLight,"enabled",true);
+        Object mainMax=mainLight==null||!mainLight.has("maxBrightness")?60:mainLight.get("maxBrightness");
+        if(!(mainMax instanceof Number))throw new IllegalArgumentException("主灯亮度上限必须为数字");
+        double maxValue=((Number)mainMax).doubleValue();
+        if(!Double.isFinite(maxValue)||maxValue<1||maxValue>100||maxValue!=Math.rint(maxValue))throw new IllegalArgumentException("主灯亮度上限应为1%至100%的整数");
+        ambientMainMaxBrightness=(int)maxValue;
         raw=root.toString();fingerprint=ConfigFingerprint.of(root);
+    }
+    int[] edgeIndices(String edge){
+        int count=0;for(Led led:leds)if(led.edge.equals(edge))count++;
+        int[] indices=new int[count];int cursor=0;
+        for(Led led:leds)if(led.edge.equals(edge))indices[cursor++]=led.index;
+        return indices;
     }
     EdgeColorEngine newEngine(){
         int[] indices=new int[leds.length];String[] edges=new String[leds.length];double[] positions=new double[leds.length];

@@ -1556,6 +1556,56 @@ gap:var(--space-8);
 margin-top:var(--space-6);
 align-items:start}
 
+.ambient-field  {
+grid-column:1/-1;
+display:grid;
+gap:var(--space-3);
+padding:var(--space-4);
+border:1px solid var(--border);
+border-radius:var(--radius-subpanel);
+background:var(--surface)}
+
+.ambient-head  {
+display:flex;
+flex-wrap:wrap;
+align-items:baseline;
+justify-content:space-between;
+gap:var(--space-2)}
+
+.ambient-toggle,.ambient-check  {
+display:flex;
+align-items:center;
+gap:var(--space-2);
+font-size:13px;
+font-weight:650}
+
+.ambient-check  {
+font-weight:500;
+color:var(--secondary)}
+
+.ambient-field .address-row  {
+display:grid;
+grid-template-columns:minmax(0,1fr) auto auto;
+gap:var(--space-2)}
+
+.ambient-grid  {
+display:grid;
+grid-template-columns:minmax(0,1fr) 128px;
+gap:var(--space-3);
+align-items:end}
+
+.ambient-devices  {
+display:flex;
+flex-wrap:wrap;
+gap:var(--space-2)}
+
+.ambient-devices:empty  {
+display:none}
+
+.ambient-field output  {
+font-variant-numeric:tabular-nums;
+color:var(--secondary)}
+
 .connection-field,.runtime-controls,.brightness-field,.effect-option,.condition-option  {
 min-width:0}
 

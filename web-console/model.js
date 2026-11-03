@@ -8,8 +8,35 @@
   function validGeometry(g){return !!g&&['screen','strip'].every(key=>{const rect=g[key];return rect&&['x','y','width','height'].every(field=>typeof rect[field]==='number'&&Number.isFinite(rect[field]))&&rect.x>=0&&rect.y>=0&&rect.width>=.02&&rect.height>=.02&&rect.x+rect.width<=1+EPS&&rect.y+rect.height<=1+EPS;});}
   function sampling(config){return config.sampling&&config.sampling.inset!==undefined?config.sampling.inset:.045;}
   function samplingQuality(config){return config.sampling&&config.sampling.quality!==undefined?config.sampling.quality:'standard';}
+  function ambientDefaults(){return {enabled:false,address:'',model:'',brightness:.8,mainLight:{enabled:true,maxBrightness:60}};}
+  function privateIpv4(value,label){
+    const text=String(value||'').trim(),parts=text.split('.');
+    if(!/^\d{1,3}(?:\.\d{1,3}){3}$/.test(text)||parts.some(part=>Number(part)>255))throw new Error('请填写'+label+'的局域网 IPv4 地址，例如 192.168.1.60。');
+    const bytes=parts.map(Number),privateAddress=bytes[0]===10||(bytes[0]===172&&bytes[1]>=16&&bytes[1]<=31)||(bytes[0]===192&&bytes[1]===168);
+    if(!privateAddress)throw new Error(label+'地址必须是 10.x.x.x、172.16–31.x.x 或 192.168.x.x 范围内的局域网 IPv4。');
+    return bytes.join('.');
+  }
+  function normalizeAmbient(raw){
+    if(raw===undefined)raw={};if(!raw||typeof raw!=='object'||Array.isArray(raw))throw new Error('Yeelight 氛围灯配置格式无效。');
+    const out={...raw},enabled=raw.enabled===undefined?false:raw.enabled;
+    if(typeof enabled!=='boolean')throw new Error('Yeelight 氛围灯开关必须为 true 或 false。');
+    let text=raw.address===undefined?'':raw.address;
+    if(typeof text!=='string')throw new Error('Yeelight 地址必须为文本。');
+    if(text.trim())text=privateIpv4(text,'Yeelight');else if(enabled)throw new Error('开启 Yeelight 氛围灯时请填写设备地址。');else text='';
+    const model=raw.model===undefined?'':raw.model;
+    if(typeof model!=='string'||model.trim().length>64)throw new Error('Yeelight 型号名称无效。');
+    const brightness=raw.brightness===undefined?.8:raw.brightness;
+    if(typeof brightness!=='number'||!Number.isFinite(brightness)||brightness<0||brightness>1)throw new Error('氛围灯亮度必须在 0–100% 之间。');
+    const main=raw.mainLight===undefined?{}:raw.mainLight;
+    if(!main||typeof main!=='object'||Array.isArray(main))throw new Error('主灯联动配置格式无效。');
+    const mainEnabled=main.enabled===undefined?true:main.enabled;
+    if(typeof mainEnabled!=='boolean')throw new Error('主灯联动开关必须为 true 或 false。');
+    const maximum=main.maxBrightness===undefined?60:main.maxBrightness;
+    if(typeof maximum!=='number'||!Number.isInteger(maximum)||maximum<1||maximum>100)throw new Error('主灯亮度上限必须为 1–100 的整数。');
+    return {...out,enabled,address:text,model:model.trim(),brightness,mainLight:{...main,enabled:mainEnabled,maxBrightness:maximum}};
+  }
   function defaults() {
-    return {version:1, geometry:defaultGeometry(),sampling:{inset:.045,quality:'standard'}, shape:'c', gap:{edge:'bottom',start:0,end:100}, cut:{edge:'bottom',position:50}, direction:'cw', view:'front', offset:0,
+    return {version:1, geometry:defaultGeometry(),sampling:{inset:.045,quality:'standard'}, shape:'c', gap:{edge:'bottom',start:0,end:100}, cut:{edge:'bottom',position:50}, direction:'cw', view:'front', offset:0, ambient:ambientDefaults(),
       edges:{top:{count:50,full:true,start:0,end:100}, right:{count:38,full:true,start:0,end:100}, bottom:{count:0,full:true,start:0,end:100}, left:{count:38,full:true,start:0,end:100}}};
   }
   function clone(v) { return JSON.parse(JSON.stringify(v)); }
@@ -148,11 +175,11 @@
     const result=evaluate(config,budget);
     if(result.errors.length) throw new Error(result.errors.join(' '));
     const saved=clone(config); delete saved.view;saved.geometry=clone(geometry(config));saved.sampling={...(saved.sampling||{}),inset:sampling(config),quality:samplingQuality(config)};
-    return {schema:'xh-tv-wled-layout/v1', coordinateSystem:'screen-front-normalized',geometryCoordinateSystem:'scene-normalized',positionCoordinateSystem:'strip-front-normalized', controller:{address:'192.168.1.50',name:'WLED 示例',ledCount:budget},layout:saved,
+    return {schema:'xh-tv-wled-layout/v1', coordinateSystem:'screen-front-normalized',geometryCoordinateSystem:'scene-normalized',positionCoordinateSystem:'strip-front-normalized', ambient:clone(config.ambient||ambientDefaults()), controller:{address:'192.168.1.50',name:'WLED 示例',ledCount:budget},layout:saved,
       leds:result.leds.map(led=>({order:led.order,wledIndex:led.physicalIndex,edge:led.edge,position:led.position,sample:led.sample})),
       unassignedIndices:Array.from({length:budget},(_,i)=>i).filter(i=>i<config.offset||i>=config.offset+result.total)};
   }
-  const api={SIDES,NAMES,defaultGeometry,geometry,validGeometry,projectSample,sampling,samplingQuality,interpolateEdge,previewField,defaults,clone,intervals,allocate,autoDistribute,components,point,sample,evaluate,exportLayout};
+  const api={SIDES,NAMES,defaultGeometry,geometry,validGeometry,projectSample,sampling,samplingQuality,interpolateEdge,previewField,defaults,clone,intervals,allocate,autoDistribute,components,point,sample,evaluate,exportLayout,ambientDefaults,normalizeAmbient,privateIpv4};
   if(typeof module!=='undefined' && module.exports) module.exports=api;
   scope.LayoutModel=api;
 })(typeof globalThis!=='undefined'?globalThis:window);

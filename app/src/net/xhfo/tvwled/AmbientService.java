@@ -26,6 +26,7 @@ import java.net.InetAddress;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.BooleanSupplier;
 
@@ -549,6 +550,13 @@ public final class AmbientService extends Service {
             String savedFingerprint=savedConfigFingerprint(),appliedFingerprint=applied==null?"":applied.fingerprint;
             status.put("savedConfigFingerprint",savedFingerprint).put("appliedConfigFingerprint",appliedFingerprint)
                 .put("pendingApply",!savedFingerprint.isEmpty()&&!savedFingerprint.equals(appliedFingerprint)).put("configFingerprintError",fingerprintError);
+            JSONObject ambientStatus=new JSONObject().put("enabled",applied!=null&&applied.ambientEnabled).put("address",applied==null?"":applied.ambientAddress)
+                .put("model",applied==null?"":applied.ambientModel).put("connected",false).put("error","").put("frames",0).put("mainBrightness",0).put("lastSentAgeMs",0);
+            if(details!=null&&details.config.ambientEnabled){
+                ambientStatus.put("connected",details.ambient!=null&&details.ambient.connected()).put("error",details.ambientError).put("frames",details.ambientFrames)
+                    .put("mainBrightness",details.ambientMainBrightness).put("lastSentAgeMs",details.ambientLastSent==0?0:Math.max(0,SystemClock.elapsedRealtime()-details.ambientLastSent));
+            }
+            status.put("ambient",ambientStatus);
             if(applied!=null)status.put("address",applied.address).put("ledCount",applied.ledCount).put("sleepOff",applied.sleepOff).put("sourceFilterEnabled",applied.sourceFilterEnabled).put("sourceOffWhenExcluded",applied.sourceOffWhenExcluded).put("samplingQuality",applied.samplingQuality).put("configuredSamplePoints",applied.pointsPerEdge*4);
             if(details!=null){
                 status.put("samples",details.samples).put("sentFrames",details.sent.get()).put("captureMs",details.captureMs)
@@ -618,6 +626,14 @@ public final class AmbientService extends Service {
         final long generation;
         final ScheduledExecutorService sampler=Executors.newSingleThreadScheduledExecutor(r->new Thread(r,"TVWLED-color"));
         final ScheduledExecutorService sender=Executors.newSingleThreadScheduledExecutor(r->new Thread(r,"TVWLED-ddp"));
+        final ScheduledExecutorService ambientLoop=Executors.newSingleThreadScheduledExecutor(r->new Thread(r,"TVWLED-yeelight"));
+        volatile YeelightAmbient ambient;
+        volatile int[] topIndices=new int[0];
+        final AtomicInteger ambientRgb=new AtomicInteger(-1);
+        volatile int ambientMainBrightness;
+        volatile String ambientError="";
+        volatile long ambientLastSent,ambientRetryAt,ambientKeepAlive;
+        volatile int ambientFrames;
         final AtomicLong sent=new AtomicLong();
         volatile boolean active=true, valid;
         volatile long lastValid,lastSent,captureMs,samples,lastPublish;
@@ -638,7 +654,7 @@ public final class AmbientService extends Service {
         boolean ownershipNoted;
         Session(LayoutConfig layout){config=layout;generation=configurationGeneration;}
         boolean isCurrent(){return active&&outputAllowed&&session==this&&activeConfig==config&&configurationGeneration==generation&&!destroyed&&!closing;}
-        void close(){active=false;valid=false;sampler.shutdownNow();sender.shutdownNow();if(socket!=null)socket.close();}
+        void close(){active=false;valid=false;sampler.shutdownNow();sender.shutdownNow();ambientLoop.shutdownNow();YeelightAmbient output=ambient;ambient=null;if(output!=null)output.close();if(socket!=null)socket.close();}
         void initialize(){
             try{
                 if(!isCurrent())return;
@@ -662,6 +678,10 @@ public final class AmbientService extends Service {
                     Log.i(TAG,"sync uid="+android.os.Process.myUid()+" panel="+size[0]+"x"+size[1]+" points="+coordinates.length+" leds="+config.ledCount);
                     sampler.schedule(this::sample,0,TimeUnit.MILLISECONDS);
                     sender.scheduleAtFixedRate(this::send,0,33,TimeUnit.MILLISECONDS);
+                    if(config.ambientEnabled){
+                        topIndices=config.edgeIndices("top");
+                        ambientLoop.scheduleAtFixedRate(this::ambientTick,0,100,TimeUnit.MILLISECONDS);
+                    }
                 }
             }catch(Exception failure){if(isCurrent()){Log.e(TAG,"initialize failed",failure);failed(this,"连接或取色初始化失败；配置后台继续运行",failure);}}
         }
@@ -721,6 +741,7 @@ public final class AmbientService extends Service {
             LedColorFrame goal=target;if(goal==null)return;
             try{
                 int[] rgb=engine.smooth(goal,SystemClock.elapsedRealtime(),config.softeningEnabled,config.softeningStrength);
+                if(config.ambientEnabled)queueAmbient(rgb);
                 byte[] data=DdpPacket.encode(rgb,sequence);sequence=sequence==15?1:sequence+1;
                 synchronized(lifecycleLock){
                     if(!isCurrent()||!valid||SystemClock.elapsedRealtime()-lastValid>1200)return;
@@ -730,6 +751,57 @@ public final class AmbientService extends Service {
                 }
             }catch(Exception failure){
                 synchronized(lifecycleLock){if(isCurrent()){error="发送失败："+failure.getMessage();state="WLED 发送异常";publish();}}
+            }
+        }
+        /** The bar's back LED is one colour, so the top edge gate is averaged into a single value. */
+        void queueAmbient(int[] rgb){
+            int[] indices=topIndices;
+            int red=0,green=0,blue=0,count=0,peak=0,total=0,lit=0;
+            for(int index:indices){
+                if(index<0||index>=rgb.length)continue;
+                int color=rgb[index],r=(color>>16)&255,g=(color>>8)&255,b=color&255;
+                red+=r;green+=g;blue+=b;count++;
+            }
+            for(int index=0;index<rgb.length;index++){
+                int color=rgb[index],r=(color>>16)&255,g=(color>>8)&255,b=color&255;
+                int brightest=Math.max(r,Math.max(g,b));
+                peak=Math.max(peak,brightest);total+=brightest;lit++;
+            }
+            int color=count==0?0:((Math.min(255,red/count)<<16)|(Math.min(255,green/count)<<8)|Math.min(255,blue/count));
+            ambientRgb.set(color);
+            int max=Math.max(1,config.ambientMainMaxBrightness);
+            int level=lit==0?1:(int)Math.round(Math.min(peak,total/lit)/255.0*max);
+            ambientMainBrightness=Math.max(1,Math.min(max,level));
+        }
+        void ambientTick(){
+            if(!isCurrent())return;
+            long now=SystemClock.elapsedRealtime();
+            try{
+                YeelightAmbient client=ambient;
+                if(client==null){
+                    if(now<ambientRetryAt)return;
+                    client=new YeelightAmbient(config.ambientAddress);ambient=client;
+                }
+                if(!client.connected()){
+                    if(now<ambientRetryAt)return;
+                    if(!client.connect(900)){
+                        ambientError="氛围灯未响应，请确认设备已开启局域网控制并处于同一网络";
+                        ambientRetryAt=SystemClock.elapsedRealtime()+5000;
+                        return;
+                    }
+                    ambientError="";ambientKeepAlive=0;client.setAmbientPower(true);
+                }
+                int color=ambientRgb.get();
+                if(color>=0){
+                    client.sendColor(color,(int)Math.round(config.ambientBrightness*100));
+                    if(config.ambientMainLightEnabled)client.sendMainBrightness(ambientMainBrightness);
+                    ambientLastSent=SystemClock.elapsedRealtime();ambientFrames++;
+                }
+                if(now-ambientKeepAlive>=5000){client.keepAlive();ambientKeepAlive=now;}
+            }catch(Exception failure){
+                ambientError=failure.getClass().getSimpleName()+": "+failure.getMessage();
+                YeelightAmbient broken=ambient;ambient=null;if(broken!=null)broken.close();
+                ambientRetryAt=now+5000;
             }
         }
     }

@@ -12,7 +12,7 @@
 
 顶部固定显示自动保存状态、失败重试、冲突处理和配置导入导出。其余功能按四组排列，可折叠各组及内部设置：
 
-- **设备与控制**：WLED 地址、连接检测、XH光流总开关和实际输出状态。
+- **设备与控制**：WLED 地址、连接检测、XH光流总开关和实际输出状态；可选的 Yeelight 显示器挂灯 Pro 氛围灯，支持 SSDP 扫描或手动 IP、氛围灯亮度与主灯亮度联动上限。
 - **画面与颜色**：画面采样（档位、缩进、跳过黑边）、亮度与柔化、高级颜色校正。
 - **灯带排布**：实时取色与校准共用画布；位置、轮廓、每边灯珠和首灯走线放在同组。
 - **运行条件**：休眠联动、允许的输入源、接口不符时关灯，以及启动与后台状态。
@@ -33,7 +33,15 @@
 
 ## 设置保存
 
-`output` 包含亮度、柔化、黑边和颜色校正；`preferences.autoStart` 控制开机恢复偏好。`runtime` 缺省为：
+`output` 包含亮度、柔化、黑边和颜色校正；`preferences.autoStart` 控制开机恢复偏好。`ambient` 控制可选的 Yeelight 氛围灯输出，缺省为关闭：
+
+```json
+{"enabled":false,"address":"","model":"","brightness":0.8,"mainLight":{"enabled":true,"maxBrightness":60}}
+```
+
+开启时必须填写私网 IPv4；`brightness` 为 0–1，`mainLight.maxBrightness` 为 1–100 的整数。氛围灯取屏幕顶部取色范围的均值，主灯只同步亮度。
+
+`runtime` 缺省为：
 
 ```json
 {"sleepOff":true,"sourceFilter":{"enabled":false,"allowed":[],"offWhenExcluded":false}}
