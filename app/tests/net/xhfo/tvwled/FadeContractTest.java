@@ -35,13 +35,14 @@ public final class FadeContractTest {
         check(firstUp>firstDown,"release is slower than attack");
         check(firstUp>20&&firstUp<90,"the attack still reaches the frame in a few steps");
 
-        // A bright frame falling to black walks down roughly linearly over two seconds.
+        // A bright frame falling to black holds briefly, then walks down over two seconds.
         EdgeColorEngine slow=engine();warm(slow);
         check(peak(slow.smooth(goal,2033,true,.35,2000))>=250,"the strip is bright before the cut");
-        check(fall(slow,2066,10,2000)>200,"the long fade still holds brightness after 300 ms");
-        int atOneSecond=fall(slow,2396,20,2000);
-        check(atOneSecond>90&&atOneSecond<170,"about half the brightness remains after one second");
-        check(fall(slow,3056,30,2000)<40,"two seconds of fade reach near black");
+        check(fall(slow,2033,3,2000)>200,"the first frames of a cut do not snap to black");
+        int atOneSecond=fall(slow,2132,24,2000);
+        check(atOneSecond>40&&atOneSecond<200,"about one second in, the fade is still on its way down");
+        int atTwoSeconds=fall(slow,2924,30,2000);
+        check(atTwoSeconds<40,"after two seconds of fade the strip is near black");
 
         // Without a fade the drop is still smoothed, but far quicker than the walk down.
         EdgeColorEngine quick=engine();warm(quick);
@@ -51,11 +52,28 @@ public final class FadeContractTest {
         EdgeColorEngine dim=engine();warm(dim);
         check(peak(dim.smooth(new int[]{40,40,40},2033,true,.35,2000))>200,"dimming to a dark scene keeps the normal release");
 
-        // A cut back to bright leaves the fade immediately.
+        // A cut back to bright leaves the fade immediately, but the rise is rate limited.
         EdgeColorEngine recover=engine();warm(recover);
-        fall(recover,2066,10,2000);
-        int recovered=peak(recover.smooth(goal,2396,true,.35,2000));
-        check(recovered>120,"bright content interrupts the fade");
+        fall(recover,2066,60,2000);
+        int recovered=peak(recover.smooth(goal,2066+60*33,true,.35,2000));
+        check(recovered>30,"bright content interrupts the fade");
+        check(recovered<120,"interrupting a dark fade does not slam to full brightness in one frame");
+
+        // Black-background animation that alternates across the threshold must not strobe: the
+        // hysteresis holds each state, so a fade never starts and the output settles mid-scale.
+        EdgeColorEngine chatter=engine();
+        for(int frame=0;frame<60;frame++)chatter.smooth(new int[]{5,5,5},frame*33,true,.35,2000);
+        int chatterPeak=0;
+        for(int frame=0;frame<40;frame++){
+            int[] out=chatter.smooth(frame%2==0?new int[]{5,5,5}:new int[]{30,30,30},2000+frame*33,true,.35,2000);
+            chatterPeak=Math.max(chatterPeak,peak(out));
+        }
+        check(chatterPeak<80,"alternating dark frames never restart a full-brightness fade");
+        check(peak(chatter.smooth(new int[]{5,5,5},3400,true,.35,2000))>0,"the strip keeps a stable low level instead of switching off");
+
+        // Rate ceilings bound a single frame.
+        EdgeColorEngine step=engine();
+        check(peak(step.smooth(goal,33,true,.35,2000))<=1.4*33+2,"a single frame cannot jump more than the rise ceiling");
 
         // Configuration bounds.
         check(new LayoutConfig(BASE).fadeDarkMs==2000,"the dark fade defaults to two seconds");

@@ -27,6 +27,12 @@ final class EdgeColorEngine {
     private boolean hasOutputTime;
     private boolean fadingToBlack;
     private double fadeRate;
+    private long darkSinceMs = -1, brightSinceMs = -1;
+    /** Hysteresis: enter the dark fade below 8, leave it only above 14, each held for a moment. */
+    private static final int DARK_ENTER = 8, DARK_LEAVE = 14;
+    private static final long DARK_HOLD_MS = 100, BRIGHT_HOLD_MS = 70;
+    /** Hard ceilings on how fast the output may move, in levels per millisecond. */
+    private static final double RISE_PER_MS = 1.4, FALL_PER_MS = .55;
 
     EdgeColorEngine(int ledCount,int[] physicalIndices,String[] edgeNames,double[] edgePositions,boolean closed){
         this(ledCount,physicalIndices,edgeNames,edgePositions,closed,POINTS_PER_EDGE);
@@ -151,21 +157,33 @@ final class EdgeColorEngine {
         double alphaDown=!enabled||strength==0?1:1-Math.exp(-dt/(strength*600*2.6));
         int goalPeak=0,currentPeak=0;
         for(int i=0;i<goal.length;i++){goalPeak=Math.max(goalPeak,goal[i]);currentPeak=Math.max(currentPeak,(int)Math.round(previous[i]));}
-        boolean fallingToBlack=goalPeak<=8&&currentPeak>24&&darkFadeMs>0;
-        if(fallingToBlack){
-            // A constant slope is what reads as a fade; an exponential keeps a bright tail and
-            // then snaps, which is exactly the flash to avoid on a cut to black.
-            if(!fadingToBlack){fadingToBlack=true;fadeRate=currentPeak/(double)Math.max(1,darkFadeMs);}
-        }else if(goalPeak>8){
+        // Hold the two states so a frame that straddles the boundary cannot restart the fade every
+        // other frame; black-background animation was doing exactly that and read as a strobe.
+        if(goalPeak<=DARK_ENTER){if(darkSinceMs<0)darkSinceMs=nowMs;brightSinceMs=-1;}
+        else if(goalPeak>=DARK_LEAVE){if(brightSinceMs<0)brightSinceMs=nowMs;darkSinceMs=-1;}
+        else{darkSinceMs=-1;brightSinceMs=-1;}
+
+        if(!fadingToBlack){
+            boolean darkLongEnough=darkSinceMs>=0&&nowMs-darkSinceMs>=DARK_HOLD_MS;
+            if(darkLongEnough&&currentPeak>24&&darkFadeMs>0){
+                // A constant slope is what reads as a fade; an exponential keeps a bright tail and
+                // then snaps, which is exactly the flash to avoid on a cut to black.
+                fadingToBlack=true;fadeRate=currentPeak/(double)Math.max(1,darkFadeMs);
+            }
+        }else if(brightSinceMs>=0&&nowMs-brightSinceMs>=BRIGHT_HOLD_MS){
             fadingToBlack=false;
         }
+
+        boolean smoothing=enabled&&strength>0;
+        double riseLimit=smoothing?RISE_PER_MS*dt:Double.MAX_VALUE,fallLimit=smoothing?FALL_PER_MS*dt:Double.MAX_VALUE;
         int[] out=new int[goal.length];
         for(int i=0;i<goal.length;i++){
-            if(fadingToBlack){
-                previous[i]=Math.max(goal[i],previous[i]-fadeRate*dt);
+            if(fadingToBlack&&goal[i]<=previous[i]){
+                previous[i]=Math.max(goal[i],previous[i]-Math.max(fadeRate*dt,0));
             }else{
-                double alpha=goal[i]>=previous[i]?alphaUp:alphaDown;
-                previous[i]+=(goal[i]-previous[i])*alpha;
+                double alpha=goal[i]>=previous[i]?alphaUp:alphaDown,delta=(goal[i]-previous[i])*alpha;
+                if(delta>riseLimit)delta=riseLimit;else if(delta<-fallLimit)delta=-fallLimit;
+                previous[i]+=delta;
             }
         }
         if(frame!=null)frame.limit(previous);
