@@ -24,15 +24,14 @@ public final class SceneContractTest {
         for(String id:ScenePreset.IDS)check(ScenePreset.known(id),"known preset "+id);
         check(!ScenePreset.known("theatre"),"unknown presets are rejected");
         check(ScenePreset.strip(null)&&ScenePreset.ambient(null),"an unbound input keeps the strip running");
-        check(!ScenePreset.strip("office")&&ScenePreset.ambient("office")&&ScenePreset.front("office"),"office drives the desk lamp and a white back light");
+        check(!ScenePreset.strip("office")&&!ScenePreset.ambient("office")&&ScenePreset.front("office"),"office drives only the desk lamp");
         check(!ScenePreset.strip("night")&&!ScenePreset.ambient("night")&&ScenePreset.front("night"),"night keeps the room dark");
         check(!ScenePreset.strip("off")&&!ScenePreset.ambient("off")&&!ScenePreset.front("off"),"off drives nothing");
         check(ScenePreset.strip("cinema")&&ScenePreset.ambient("cinema")&&!ScenePreset.front("cinema"),"cinema runs the strip and back LED only");
-        check(ScenePreset.MODE_LIGHT.equals(ScenePreset.ambientMode("office")),"office puts the back LED in light mode");
         check(ScenePreset.MODE_SCREEN.equals(ScenePreset.ambientMode("cinema"))&&ScenePreset.MODE_SCREEN.equals(ScenePreset.ambientMode("game")),"cinema and game follow the picture");
         check(ScenePreset.MODE_SCREEN.equals(ScenePreset.ambientMode(null)),"an unbound input keeps the back LED following the picture");
         check(ScenePreset.MODE_OFF.equals(ScenePreset.ambientMode("night"))&&ScenePreset.MODE_OFF.equals(ScenePreset.ambientMode("off")),"night and off leave the back LED dark");
-        check(ScenePreset.lightCt("office")==4000,"office uses a neutral desk-light temperature");
+        check(ScenePreset.MODE_OFF.equals(ScenePreset.ambientMode("office")),"office leaves the back LED dark");
         check(ScenePreset.strip("game")&&ScenePreset.ambient("game")&&ScenePreset.front("game"),"game runs everything");
         check(ScenePreset.frontBrightness("night")<ScenePreset.frontBrightness("office"),"night is dimmer than office");
         check(ScenePreset.frontCt("night")==2700&&ScenePreset.frontCt("office")==4000,"presets carry their own colour temperature");

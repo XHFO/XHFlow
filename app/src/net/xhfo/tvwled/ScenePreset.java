@@ -24,20 +24,12 @@ final class ScenePreset {
         return !MODE_OFF.equals(ambientMode(preset));
     }
 
-    static final String MODE_SCREEN = "screen", MODE_LIGHT = "light", MODE_OFF = "off";
+    static final String MODE_SCREEN = "screen", MODE_OFF = "off";
 
-    /**
-     * The bar's back LED has two useful states: follow the picture, or act as a plain white light.
-     * Office turns it into desk illumination; cinema and game keep it in sync with the picture.
-     */
+    /** The bar's back LED either follows the picture or stays dark; the front light is separate. */
     static String ambientMode(String preset) {
         if (preset == null || "cinema".equals(preset) || "game".equals(preset)) return MODE_SCREEN;
-        if ("office".equals(preset)) return MODE_LIGHT;
         return MODE_OFF;
-    }
-
-    static int lightCt(String preset) {
-        return 4000;
     }
 
     /** The bar's front light is the desk lamp: some presets want it, some want the room dark. */

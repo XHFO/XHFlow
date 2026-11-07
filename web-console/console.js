@@ -167,7 +167,7 @@
     $('ambientMainLight').disabled=busy||!ambientValues.enabled;$('ambientMainMax').disabled=busy||!ambientValues.enabled||!ambientValues.mainLight.enabled;
     $('ambientScan').disabled=!online||busy||ambientBusy;$('ambientProbe').disabled=!online||busy||ambientBusy;
     const ambientStatus=lastStatus&&lastStatus.ambient;
-    $('ambientResult').textContent=ambientHint||(ambientStatus&&ambientStatus.enabled?(ambientStatus.connected?(ambientStatus.mode==='light'?'氛围灯已连接 · 照明模式（暖白常亮）':ambientStatus.mode==='off'?'氛围灯已连接 · 当前场景关闭氛围灯':ambientStatus.frames>0?'氛围灯已连接 · 同色模式，已发送 '+ambientStatus.frames+' 帧':'氛围灯已连接 · 等待画面输出'):('氛围灯未连接：'+(ambientStatus.error||'等待设备响应'))):'取屏幕顶部颜色，经局域网直接控制挂灯背后的氛围灯。');
+    $('ambientResult').textContent=ambientHint||(ambientStatus&&ambientStatus.enabled?(ambientStatus.connected?(ambientStatus.mode==='off'?'氛围灯已连接 · 当前场景关闭氛围灯':ambientStatus.frames>0?'氛围灯已连接 · 同色模式，已发送 '+ambientStatus.frames+' 帧':'氛围灯已连接 · 等待画面输出'):('氛围灯未连接：'+(ambientStatus.error||'等待设备响应'))):'取屏幕顶部颜色，经局域网直接控制挂灯背后的氛围灯。');
     renderSceneBindings();
     renderConditions();
     document.querySelector('.workspace').inert=busy||(initializing&&!initialized);
@@ -202,7 +202,7 @@
   function renderSceneBindings(){
     const wrap=$('sceneBindings'),names={cinema:'观影',game:'游戏',office:'办公',night:'夜间',off:'全关'};
     if(!inputsSupported.length){wrap.replaceChildren();sceneKey='';$('sceneHint').textContent='尚未取得接口列表，连接电视后才能为各信号源绑定场景。';return;}
-    $('sceneHint').textContent='给每个信号源绑定一个场景：办公＝挂灯照明（前向 80% + 背后暖白），观影/游戏＝灯带与氛围灯跟随画面，夜间＝低亮主灯，全关＝全部关闭。未绑定则保持当前行为。';
+    $('sceneHint').textContent='给每个信号源绑定一个场景：办公＝只开挂灯前向照明，观影/游戏＝灯带与氛围灯跟随画面，夜间＝低亮主灯，全关＝全部关闭。未绑定则保持当前行为。';
     const key=stable(inputsSupported);
     if(key!==sceneKey){
       sceneKey=key;wrap.replaceChildren();

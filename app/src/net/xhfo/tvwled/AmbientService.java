@@ -672,7 +672,7 @@ public final class AmbientService extends Service {
         final AtomicInteger ambientRgb=new AtomicInteger(-1);
         volatile int ambientMainBrightness;
         volatile String ambientError="";
-        volatile long ambientLastSent,ambientRetryAt,ambientKeepAlive,ambientHandshakeAt,ambientLightAt;
+        volatile long ambientLastSent,ambientRetryAt,ambientKeepAlive,ambientHandshakeAt;
         volatile boolean ambientPowerOn;
         volatile int ambientFrames;
         final AtomicLong sent=new AtomicLong();
@@ -831,11 +831,6 @@ public final class AmbientService extends Service {
                     String mode=ScenePreset.ambientMode(preset);
                     if(!ambientPowerOn){
                         client.setAmbientPower(!ScenePreset.MODE_OFF.equals(mode));
-                        if(ScenePreset.MODE_LIGHT.equals(mode)){
-                            client.setAmbientCt(ScenePreset.lightCt(preset));
-                            client.setAmbientBrightness((int)Math.round(config.ambientBrightness*100));
-                        }
-                        ambientLightAt=SystemClock.elapsedRealtime();
                         if(preset!=null){
                             // A binding owns the desk lamp; without one the front light is left alone.
                             client.setMainPower(ScenePreset.front(preset));
@@ -858,11 +853,6 @@ public final class AmbientService extends Service {
                         if(config.ambientMainLightEnabled)client.sendMainBrightness(ambientMainBrightness);
                         ambientLastSent=SystemClock.elapsedRealtime();ambientFrames++;
                     }
-                }else if(ScenePreset.MODE_LIGHT.equals(mode)&&now-ambientLightAt>=15000){
-                    // The bar may be touched by its own app; re-assert the white state now and then.
-                    client.setAmbientCt(ScenePreset.lightCt(preset));
-                    client.setAmbientBrightness((int)Math.round(config.ambientBrightness*100));
-                    ambientLightAt=now;ambientLastSent=now;
                 }
                 if(now-ambientKeepAlive>=5000){client.keepAlive();ambientKeepAlive=now;}
             }catch(Exception failure){
