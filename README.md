@@ -2,22 +2,22 @@
 
 让画面的色彩，延伸到屏幕之外。
 
-[下载 0.5.4 测试版 APK](https://github.com/XHFO/XHFlow/releases/tag/v0.5.4) · [更新说明](https://github.com/XHFO/XHFlow/releases)
+[下载 0.6.0 测试版 APK](https://github.com/XHFO/XHFlow/releases/tag/v0.6.0) · [更新说明](https://github.com/XHFO/XHFlow/releases)
 
 ![电视端界面](docs/images/tv-ui.png)
 
-*0.5.4 真机界面，二维码、配对凭据和局域网地址已隐藏。*
+*0.6.0 真机界面，二维码、配对凭据和局域网地址已隐藏。*
 
 ![网页配置界面](docs/images/web-console.png)
 
-*0.5.4 WebUI 本地演示，示例地址不指向真实设备。*
+*0.6.0 WebUI 本地演示，示例地址不指向真实设备。*
 
 <details>
 <summary>查看灯光与颜色设置</summary>
 
 ![灯光与颜色设置](docs/images/web-effects.png)
 
-*0.5.4 WebUI 本地演示，包含可调的零散黑点过滤。*
+*0.6.0 WebUI 本地演示，包含可调的零散黑点过滤。*
 
 </details>
 
@@ -167,7 +167,7 @@ API 由电视本机 8768 端口提供，携带本机生成的 `X-TVWLED-Token` �
 
 ## 验证
 
-0.5.4 的更新范围见 [版本说明](docs/RELEASE-0.5.4.md)。黑区过滤、黑位保护、静默恢复与条件灯控的真机记录，以及界面与自动保存的历史验证，见 [验证记录](docs/VALIDATION.md)。圆角、分组与兼容回退说明见 [界面调整说明](docs/UI-REFINEMENT.md)。
+0.6.0 的更新范围见 [版本说明](docs/RELEASE-0.6.0.md)。黑区过滤、黑位保护、静默恢复与条件灯控的真机记录，以及界面与自动保存的历史验证，见 [验证记录](docs/VALIDATION.md)。圆角、分组与兼容回退说明见 [界面调整说明](docs/UI-REFINEMENT.md)。
 
 ## 许可
 
