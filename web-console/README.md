@@ -12,10 +12,10 @@
 
 顶部固定显示自动保存状态、失败重试、冲突处理和配置导入导出。其余功能按四组排列，可折叠各组及内部设置：
 
-- **设备与控制**：WLED 地址、连接检测、XH光流总开关和实际输出状态。
+- **设备与控制**：WLED 地址、连接检测、XH光流总开关和实际输出状态；可选的 Yeelight 显示器挂灯 Pro 氛围灯，支持 SSDP 扫描或手动 IP、氛围灯亮度与主灯亮度联动上限。
 - **画面与颜色**：画面采样（档位、缩进、跳过黑边）、亮度与柔化、高级颜色校正。
 - **灯带排布**：实时取色与校准共用画布；位置、轮廓、每边灯珠和首灯走线放在同组。
-- **运行条件**：休眠联动、允许的输入源、接口不符时关灯，以及启动与后台状态。
+- **运行条件**：休眠联动、允许的输入源、接口不符时关灯，以及每个信号源的场景绑定（观影 / 游戏 / 办公 / 夜间 / 全关）和启动与后台状态。
 
 总开关与电视端一致；折叠只改变显示，不重建控件或清除设置。圆角、间距和浏览器兼容边界见 [界面调整说明](../docs/UI-REFINEMENT.md)。
 
@@ -23,7 +23,7 @@
 
 - C 字形支持一处连续缺口；口字形支持完整四边和断开位置。
 - 灯号以屏幕正面为准，可设置首灯、走线方向、WLED 起始编号和各边灯珠数；编号不环绕。
-- `layout.geometry.screen/strip` 是独立的场景归一化矩形 `{x,y,width,height}`。拖动和缩放方框不会重排灯号；背面观察只镜像绘图。
+- `layout.geometry.screen/strip/ambient` 是独立的场景归一化矩形 `{x,y,width,height}`。`ambient` 是 Yeelight 挂灯灯棒，默认位于屏幕上方一条直线，可用“挂灯”按钮选中后拖动或按实际宽度校准；它不参与灯号排布，只决定画布上的位置和取色示意。拖动和缩放方框不会重排灯号；背面观察只镜像绘图。
 - `leds.position` 是灯带局部坐标，`leds.sample` 是屏幕正面归一化取色坐标；导入会根据布局重新计算每灯映射。
 - `layout.sampling={inset:0.045,quality:'standard'}`：缩进范围 0–0.2；精度为 `standard`（20 点）或 `fine`（40 点），细腻会增加采样延迟。旧配置缺省为标准。
 - 实时预览使用电视实际返回的四边 5/10 点，不根据未保存的草稿伪造点数；屏幕渐变是边缘插值示意，不是画面截图。灯带草稿颜色未模拟颜色校正、亮度与柔化。
@@ -33,7 +33,25 @@
 
 ## 设置保存
 
-`output` 包含亮度、柔化、黑边和颜色校正；`preferences.autoStart` 控制开机恢复偏好。`runtime` 缺省为：
+`output` 包含亮度、柔化、黑边和颜色校正；`preferences.autoStart` 控制开机恢复偏好。`output.fade.darkMs` 是画面从亮转黑时的渐暗时长（毫秒，0–5000，缺省 2000）；上升仍按柔化强度跟随，下降更慢。
+
+`scenes.bindings` 把信号源绑定到场景预设，未绑定的输入保持原有的“灯带 + 氛围灯”行为：
+
+```json
+{"bindings":[{"source":"30","preset":"office"}]}
+```
+
+预设：`cinema`（灯带+氛围灯）、`game`（灯带+氛围灯+弱主灯）、`office`（只开主灯 80%/4000K）、`night`（主灯 15%/2700K）、`off`（全关）。
+
+`ambient` 控制可选的 Yeelight 氛围灯输出，缺省为关闭：
+
+```json
+{"enabled":false,"address":"","model":"","brightness":0.8,"mainLight":{"enabled":true,"maxBrightness":60}}
+```
+
+开启时必须填写私网 IPv4；`brightness` 为 0–1，`mainLight.maxBrightness` 为 1–100 的整数。氛围灯取屏幕顶部取色范围的均值，主灯只同步亮度。
+
+`runtime` 缺省为：
 
 ```json
 {"sleepOff":true,"sourceFilter":{"enabled":false,"allowed":[],"offWhenExcluded":false}}

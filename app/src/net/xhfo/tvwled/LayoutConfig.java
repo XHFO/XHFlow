@@ -12,8 +12,14 @@ final class LayoutConfig {
     final Led[] leds;
     final float brightness;
     final boolean softeningEnabled,blackBarsEnabled,blackFilterEnabled,closed,sleepOff,sourceFilterEnabled,sourceOffWhenExcluded;
+    final boolean ambientEnabled,ambientMainLightEnabled;
+    final String ambientAddress,ambientModel;
+    final double ambientBrightness;
+    final int ambientMainMaxBrightness;
     final String[] allowedSources;
     final double softeningStrength,samplingInset,blackFilterThreshold;
+    final int fadeDarkMs;
+    final String[] sceneSources,scenePresets;
     final double colorSaturation,colorGain,colorOffset,colorGamma,colorRedGain,colorGreenGain,colorBlueGain;
     static final class Led {
         final int index, order;
@@ -63,6 +69,13 @@ final class LayoutConfig {
         if(!(threshold instanceof Number))throw new IllegalArgumentException("黑点占比阈值必须为数字");
         blackFilterThreshold=((Number)threshold).doubleValue();
         if(!Double.isFinite(blackFilterThreshold)||blackFilterThreshold<0.01||blackFilterThreshold>0.5)throw new IllegalArgumentException("黑点占比阈值应在1%至50%之间");
+        JSONObject fade=output==null?null:output.optJSONObject("fade");
+        if(output!=null&&output.has("fade")&&!output.isNull("fade")&&fade==null)throw new IllegalArgumentException("渐暗设置应为对象");
+        Object darkMs=fade==null||!fade.has("darkMs")?2000:fade.get("darkMs");
+        if(!(darkMs instanceof Number))throw new IllegalArgumentException("渐暗时长必须为数字");
+        double darkValue=((Number)darkMs).doubleValue();
+        if(!Double.isFinite(darkValue)||darkValue<0||darkValue>5000)throw new IllegalArgumentException("渐暗时长应在0至5000毫秒之间");
+        fadeDarkMs=(int)Math.round(darkValue);
         JSONObject color=output==null?null:output.optJSONObject("color");
         if(output!=null&&output.has("color")&&!output.isNull("color")&&color==null)throw new IllegalArgumentException("颜色校正应为对象");
         colorSaturation=colorValue(color,"saturation",1,0,2);colorGain=colorValue(color,"gain",1,0,2);
@@ -89,12 +102,77 @@ final class LayoutConfig {
         allowedSources=new String[allowed==null?0:allowed.length()];java.util.HashSet<String> seen=new java.util.HashSet<>();
         for(int i=0;i<allowedSources.length;i++){Object id=allowed.get(i);if(!(id instanceof String)||!((String)id).matches("[0-9]{1,3}")||!seen.add((String)id))throw new IllegalArgumentException("接口ID必须为不重复的字符串");allowedSources[i]=(String)id;}
         if(sourceFilterEnabled&&allowedSources.length==0)throw new IllegalArgumentException("开启接口筛选时至少选择一个接口");
+        JSONObject ambient=root.optJSONObject("ambient");
+        if(root.has("ambient")&&!root.isNull("ambient")&&ambient==null)throw new IllegalArgumentException("Yeelight 氛围灯配置应为对象");
+        ambientEnabled=booleanValue(ambient,"enabled",false);
+        Object ambientAddressValue=ambient==null?null:ambient.opt("address");
+        ambientAddress=ambientAddressValue instanceof String?((String)ambientAddressValue).trim():"";
+        if(ambientEnabled){
+            if(ambientAddress.isEmpty())throw new IllegalArgumentException("开启 Yeelight 氛围灯时请填写设备地址");
+            validateAddress(ambientAddress);
+        }else if(!ambientAddress.isEmpty())validateAddress(ambientAddress);
+        Object modelValue=ambient==null?null:ambient.opt("model");
+        ambientModel=modelValue instanceof String?((String)modelValue).trim():"";
+        if(ambientModel.length()>64)throw new IllegalArgumentException("Yeelight 型号名称过长");
+        Object ambientBrightnessValue=ambient==null||!ambient.has("brightness")?0.8:ambient.get("brightness");
+        if(!(ambientBrightnessValue instanceof Number))throw new IllegalArgumentException("氛围灯亮度必须为数字");
+        ambientBrightness=((Number)ambientBrightnessValue).doubleValue();
+        if(!Double.isFinite(ambientBrightness)||ambientBrightness<0||ambientBrightness>1)throw new IllegalArgumentException("氛围灯亮度应在0%至100%之间");
+        JSONObject mainLight=ambient==null?null:ambient.optJSONObject("mainLight");
+        if(ambient!=null&&ambient.has("mainLight")&&!ambient.isNull("mainLight")&&mainLight==null)throw new IllegalArgumentException("主灯联动应为对象");
+        ambientMainLightEnabled=booleanValue(mainLight,"enabled",true);
+        Object mainMax=mainLight==null||!mainLight.has("maxBrightness")?60:mainLight.get("maxBrightness");
+        if(!(mainMax instanceof Number))throw new IllegalArgumentException("主灯亮度上限必须为数字");
+        double maxValue=((Number)mainMax).doubleValue();
+        if(!Double.isFinite(maxValue)||maxValue<1||maxValue>100||maxValue!=Math.rint(maxValue))throw new IllegalArgumentException("主灯亮度上限应为1%至100%的整数");
+        ambientMainMaxBrightness=(int)maxValue;
+        JSONObject scenes=root.optJSONObject("scenes");
+        if(root.has("scenes")&&!root.isNull("scenes")&&scenes==null)throw new IllegalArgumentException("场景绑定应为对象");
+        JSONArray bindings=scenes==null?null:scenes.optJSONArray("bindings");
+        if(scenes!=null&&scenes.has("bindings")&&!scenes.isNull("bindings")&&bindings==null)throw new IllegalArgumentException("场景绑定应为数组");
+        sceneSources=new String[bindings==null?0:bindings.length()];scenePresets=new String[sceneSources.length];
+        java.util.HashSet<String> sceneSeen=new java.util.HashSet<>();
+        for(int i=0;i<sceneSources.length;i++){
+            Object item=bindings.get(i);
+            if(!(item instanceof JSONObject))throw new IllegalArgumentException("场景绑定项应为对象");
+            JSONObject binding=(JSONObject)item;
+            Object source=binding.opt("source"),preset=binding.opt("preset");
+            if(!(source instanceof String)||!((String)source).matches("[0-9]{1,3}"))throw new IllegalArgumentException("场景绑定的接口ID无效");
+            if(!sceneSeen.add((String)source))throw new IllegalArgumentException("同一接口只能绑定一个场景");
+            if(!(preset instanceof String)||!ScenePreset.known((String)preset))throw new IllegalArgumentException("场景预设无效");
+            sceneSources[i]=(String)source;scenePresets[i]=(String)preset;
+        }
         raw=root.toString();fingerprint=ConfigFingerprint.of(root);
+    }
+    /**
+     * Centre-weighted mixing for a single-colour bar above the screen: the middle of the top edge
+     * dominates, the corners keep a fifth of the weight so a bright corner still tints it.
+     */
+    double[] edgeWeights(String edge){
+        double[] weights=new double[leds.length];int cursor=0;
+        for(Led led:leds){
+            if(!led.edge.equals(edge))continue;
+            double offset=led.u-.5;
+            weights[cursor++]=.2+.8*Math.exp(-(offset*offset)/(2*.22*.22));
+        }
+        return java.util.Arrays.copyOf(weights,cursor);
+    }
+    int[] edgeIndices(String edge){
+        int count=0;for(Led led:leds)if(led.edge.equals(edge))count++;
+        int[] indices=new int[count];int cursor=0;
+        for(Led led:leds)if(led.edge.equals(edge))indices[cursor++]=led.index;
+        return indices;
     }
     EdgeColorEngine newEngine(){
         int[] indices=new int[leds.length];String[] edges=new String[leds.length];double[] positions=new double[leds.length];
         for(int i=0;i<leds.length;i++){indices[i]=leds[i].index;edges[i]=leds[i].edge;positions[i]=leds[i].u;}
         return new EdgeColorEngine(ledCount,indices,edges,positions,closed,pointsPerEdge);
+    }
+    /** Null when the input has no binding: the strip keeps its default behaviour. */
+    String presetFor(String source){
+        if(source==null)return null;
+        for(int i=0;i<sceneSources.length;i++)if(sceneSources[i].equals(source))return scenePresets[i];
+        return null;
     }
     boolean allows(String source){for(String allowed:allowedSources)if(allowed.equals(source))return true;return false;}
     private static boolean booleanValue(JSONObject object,String name,boolean fallback) throws Exception {

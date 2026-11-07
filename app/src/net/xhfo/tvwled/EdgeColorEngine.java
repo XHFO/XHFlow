@@ -25,6 +25,15 @@ final class EdgeColorEngine {
     private final boolean closed;
     private long lastOutputMs;
     private boolean hasOutputTime;
+    private boolean fadingToBlack;
+    private double fadeRate;
+    private long darkSinceMs = -1, brightSinceMs = -1;
+    private double[] smoothedLimits;
+    /** Hysteresis: enter the dark fade below 8, leave it only above 14, each held for a moment. */
+    private static final int DARK_ENTER = 8, DARK_LEAVE = 14;
+    private static final long DARK_HOLD_MS = 100, BRIGHT_HOLD_MS = 70;
+    /** Hard ceilings on how fast the output may move, in levels per millisecond. */
+    private static final double RISE_PER_MS = 1.4, FALL_PER_MS = .55;
 
     EdgeColorEngine(int ledCount,int[] physicalIndices,String[] edgeNames,double[] edgePositions,boolean closed){
         this(ledCount,physicalIndices,edgeNames,edgePositions,closed,POINTS_PER_EDGE);
@@ -123,21 +132,84 @@ final class EdgeColorEngine {
         return out;
     }
     synchronized int[] smooth(LedColorFrame frame,long nowMs,boolean enabled,double strength){
-        if(frame==null)throw new IllegalArgumentException("Output frame required");
-        return smooth(frame.goal(),nowMs,enabled,strength,frame);
+        return smooth(frame,nowMs,enabled,strength,0);
     }
     /** Called by one sender; exponential time smoothing remains stable across frame rates. */
     synchronized int[] smooth(int[] goal,long nowMs,boolean enabled,double strength){
-        return smooth(goal,nowMs,enabled,strength,null);
+        return smooth(goal,nowMs,enabled,strength,null,0);
     }
-    private int[] smooth(int[] goal,long nowMs,boolean enabled,double strength,LedColorFrame frame){
+    synchronized int[] smooth(int[] goal,long nowMs,boolean enabled,double strength,int darkFadeMs){
+        return smooth(goal,nowMs,enabled,strength,null,darkFadeMs);
+    }
+    synchronized int[] smooth(LedColorFrame frame,long nowMs,boolean enabled,double strength,int darkFadeMs){
+        if(frame==null)throw new IllegalArgumentException("Output frame required");
+        return smooth(frame.goal(),nowMs,enabled,strength,frame,darkFadeMs);
+    }
+    /**
+     * Rising light follows quickly so the strip keeps up with cuts; falling light is released
+     * slowly, and a drop into black walks down over {@code darkFadeMs} instead of snapping. That
+     * asymmetric release is what stops dark scenes and fades to black from strobing.
+     */
+    private int[] smooth(int[] goal,long nowMs,boolean enabled,double strength,LedColorFrame frame,int darkFadeMs){
         if(goal==null||goal.length!=ledCount*3)throw new IllegalArgumentException("Invalid output length");
         unit(strength);for(int value:goal)if(value<0||value>255)throw new IllegalArgumentException("Invalid output RGB");
         double dt=hasOutputTime?Math.max(1,Math.min(1000,nowMs-lastOutputMs)):33;
-        double alpha=!enabled||strength==0?1:1-Math.exp(-dt/(strength*600));
+        double alphaUp=!enabled||strength==0?1:1-Math.exp(-dt/(strength*600));
+        double alphaDown=!enabled||strength==0?1:1-Math.exp(-dt/(strength*600*2.6));
+        int goalPeak=0,currentPeak=0;
+        for(int i=0;i<goal.length;i++){goalPeak=Math.max(goalPeak,goal[i]);currentPeak=Math.max(currentPeak,(int)Math.round(previous[i]));}
+        // Hold the two states so a frame that straddles the boundary cannot restart the fade every
+        // other frame; black-background animation was doing exactly that and read as a strobe.
+        if(goalPeak<=DARK_ENTER){if(darkSinceMs<0)darkSinceMs=nowMs;brightSinceMs=-1;}
+        else if(goalPeak>=DARK_LEAVE){if(brightSinceMs<0)brightSinceMs=nowMs;darkSinceMs=-1;}
+        else{darkSinceMs=-1;brightSinceMs=-1;}
+
+        if(!fadingToBlack){
+            boolean darkLongEnough=darkSinceMs>=0&&nowMs-darkSinceMs>=DARK_HOLD_MS;
+            if(enabled&&darkLongEnough&&currentPeak>24&&darkFadeMs>0){
+                // A constant slope is what reads as a fade; an exponential keeps a bright tail and
+                // then snaps, which is exactly the flash to avoid on a cut to black.
+                fadingToBlack=true;fadeRate=currentPeak/(double)Math.max(1,darkFadeMs);
+            }
+        }else if(brightSinceMs>=0&&nowMs-brightSinceMs>=BRIGHT_HOLD_MS){
+            fadingToBlack=false;
+        }
+
+        boolean smoothing=enabled&&strength>0;
+        double riseLimit=smoothing?RISE_PER_MS*dt:Double.MAX_VALUE,fallLimit=smoothing?FALL_PER_MS*dt:Double.MAX_VALUE;
         int[] out=new int[goal.length];
-        for(int i=0;i<goal.length;i++)previous[i]+=(goal[i]-previous[i])*alpha;
-        if(frame!=null)frame.limit(previous);
+        for(int i=0;i<goal.length;i++){
+            if(fadingToBlack&&goal[i]<=previous[i]){
+                previous[i]=Math.max(goal[i],previous[i]-Math.max(fadeRate*dt,0));
+            }else{
+                double alpha=goal[i]>=previous[i]?alphaUp:alphaDown,delta=(goal[i]-previous[i])*alpha;
+                if(delta>riseLimit)delta=riseLimit;else if(delta<-fallLimit)delta=-fallLimit;
+                previous[i]+=delta;
+            }
+        }
+        if(frame!=null){
+            // The black-point ceiling is recomputed from the raw sample every frame, so a one-level
+            // jitter at its knee (peak 24) would swing a dark LED between 4 and 7 levels - visible
+            // as flicker on a still picture. Ease the ceiling like everything else.
+            double[] limits=frame.limits();
+            if(smoothedLimits==null||smoothedLimits.length!=limits.length)smoothedLimits=limits.clone();
+            else{
+                double limitAlpha=enabled&&strength>0?1-Math.exp(-dt/250.0):1;
+                for(int i=0;i<limits.length;i++){
+                    double delta=limits[i]-smoothedLimits[i];
+                    // Small wobble at the knee is eased; a real cut (pure black, or a bright scene)
+                    // must take effect at once, which is also what black-point protection promises.
+                    smoothedLimits[i]+=delta*(Math.abs(delta)>48?1:limitAlpha);
+                }
+            }
+            for(int i=0;i<limits.length;i++){
+                int base=i*3;double peak=Math.max(previous[base],Math.max(previous[base+1],previous[base+2]));
+                if(peak>smoothedLimits[i]&&peak>0){
+                    double factor=smoothedLimits[i]/peak;
+                    for(int c=0;c<3;c++)previous[base+c]*=factor;
+                }
+            }
+        }
         for(int i=0;i<goal.length;i++)out[i]=channel(previous[i]);
         lastOutputMs=nowMs;hasOutputTime=true;return out;
     }

@@ -3,6 +3,7 @@ package net.xhfo.tvwled;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.util.Log;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
@@ -149,8 +150,18 @@ final class ConfigServer implements AutoCloseable {
         // Reading a WLED device is independent I/O; never hold the configuration lock over it.
         if(request.method.equals("POST")&&request.path.equals("/api/probe")){
             JSONObject body=new JSONObject(new String(request.body,StandardCharsets.UTF_8));
-            String address=body.getString("address").trim();JSONObject info=WledInfo.read(address);connection=info.getString("name")+" · "+info.getInt("ledCount")+"颗 · WLED "+info.getString("version");
-            return info.put("ok",true).put("address",address);
+            String address=body.getString("address").trim();
+            if("yeelight".equals(body.optString("type",""))){
+                JSONObject info=YeelightAmbient.probe(address,1500);
+                return info.put("ok",true).put("type","yeelight");
+            }
+            JSONObject info=WledInfo.read(address);connection=info.getString("name")+" · "+info.getInt("ledCount")+"颗 · WLED "+info.getString("version");
+            return info.put("ok",true).put("address",address).put("type","wled");
+        }
+        if(request.method.equals("POST")&&request.path.equals("/api/discover")){
+            JSONArray devices=new JSONArray();
+            for(JSONObject device:YeelightAmbient.discover(context,1800))devices.put(device);
+            return new JSONObject().put("ok",true).put("devices",devices);
         }
         synchronized(CONFIG_LOCK){return configurationApi(request);}
     }

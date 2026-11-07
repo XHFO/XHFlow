@@ -38,6 +38,7 @@ final class LedColorFrame {
     }
 
     int[] goal(){return goal.clone();}
+    double[] limits(){return limits;}
 
     /** Limit the sender's history too, so an old bright frame cannot return after black. */
     void limit(double[] rgb){
