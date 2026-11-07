@@ -590,7 +590,7 @@ public final class AmbientService extends Service {
                 .put("model",applied==null?"":applied.ambientModel).put("connected",false).put("error","").put("frames",0).put("mainBrightness",0).put("lastSentAgeMs",0);
             if(details!=null&&details.config.ambientEnabled){
                 ambientStatus.put("connected",details.ambient!=null&&details.ambient.connected()).put("error",details.ambientError).put("frames",details.ambientFrames)
-                    .put("mainBrightness",details.ambientMainBrightness).put("lastSentAgeMs",details.ambientLastSent==0?0:Math.max(0,SystemClock.elapsedRealtime()-details.ambientLastSent));
+                    .put("mode",ScenePreset.ambientMode(details.preset)).put("mainBrightness",details.ambientMainBrightness).put("lastSentAgeMs",details.ambientLastSent==0?0:Math.max(0,SystemClock.elapsedRealtime()-details.ambientLastSent));
             }
             status.put("ambient",ambientStatus);
             if(applied!=null)status.put("address",applied.address).put("ledCount",applied.ledCount).put("sleepOff",applied.sleepOff).put("sourceFilterEnabled",applied.sourceFilterEnabled).put("sourceOffWhenExcluded",applied.sourceOffWhenExcluded).put("samplingQuality",applied.samplingQuality).put("configuredSamplePoints",applied.pointsPerEdge*4);
@@ -672,7 +672,7 @@ public final class AmbientService extends Service {
         final AtomicInteger ambientRgb=new AtomicInteger(-1);
         volatile int ambientMainBrightness;
         volatile String ambientError="";
-        volatile long ambientLastSent,ambientRetryAt,ambientKeepAlive,ambientHandshakeAt;
+        volatile long ambientLastSent,ambientRetryAt,ambientKeepAlive,ambientHandshakeAt,ambientLightAt;
         volatile boolean ambientPowerOn;
         volatile int ambientFrames;
         final AtomicLong sent=new AtomicLong();
@@ -828,8 +828,14 @@ public final class AmbientService extends Service {
                         return;
                     }
                     ambientError="";ambientKeepAlive=0;ambientHandshakeAt=SystemClock.elapsedRealtime();
+                    String mode=ScenePreset.ambientMode(preset);
                     if(!ambientPowerOn){
-                        client.setAmbientPower(ScenePreset.ambient(preset));
+                        client.setAmbientPower(!ScenePreset.MODE_OFF.equals(mode));
+                        if(ScenePreset.MODE_LIGHT.equals(mode)){
+                            client.setAmbientCt(ScenePreset.lightCt(preset));
+                            client.setAmbientBrightness((int)Math.round(config.ambientBrightness*100));
+                        }
+                        ambientLightAt=SystemClock.elapsedRealtime();
                         if(preset!=null){
                             // A binding owns the desk lamp; without one the front light is left alone.
                             client.setMainPower(ScenePreset.front(preset));
@@ -844,11 +850,19 @@ public final class AmbientService extends Service {
                     if(client.connect(900)){ambientHandshakeAt=SystemClock.elapsedRealtime();ambientKeepAlive=0;ambientError="";}
                     else{ambientError="氛围灯会话刷新失败，将自动重试";return;}
                 }
-                int color=ambientRgb.get();
-                if(color>=0&&ScenePreset.ambient(preset)){
-                    client.sendColor(color,(int)Math.round(config.ambientBrightness*100));
-                    if(config.ambientMainLightEnabled)client.sendMainBrightness(ambientMainBrightness);
-                    ambientLastSent=SystemClock.elapsedRealtime();ambientFrames++;
+                String mode=ScenePreset.ambientMode(preset);
+                if(ScenePreset.MODE_SCREEN.equals(mode)){
+                    int color=ambientRgb.get();
+                    if(color>=0){
+                        client.sendColor(color,(int)Math.round(config.ambientBrightness*100));
+                        if(config.ambientMainLightEnabled)client.sendMainBrightness(ambientMainBrightness);
+                        ambientLastSent=SystemClock.elapsedRealtime();ambientFrames++;
+                    }
+                }else if(ScenePreset.MODE_LIGHT.equals(mode)&&now-ambientLightAt>=15000){
+                    // The bar may be touched by its own app; re-assert the white state now and then.
+                    client.setAmbientCt(ScenePreset.lightCt(preset));
+                    client.setAmbientBrightness((int)Math.round(config.ambientBrightness*100));
+                    ambientLightAt=now;ambientLastSent=now;
                 }
                 if(now-ambientKeepAlive>=5000){client.keepAlive();ambientKeepAlive=now;}
             }catch(Exception failure){

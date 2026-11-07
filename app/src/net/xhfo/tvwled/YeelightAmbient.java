@@ -145,6 +145,18 @@ final class YeelightAmbient implements Closeable {
         sendCommand(mainBrightnessCommand(next(), level, token));
     }
 
+    /** Colour-temperature mode for the back LED: the bar works as a plain white light. */
+    synchronized void setAmbientCt(int kelvin) {
+        sendCommand(String.format(Locale.ROOT,
+                "{ \"id\":%d, \"method\" : \"bg_set_ct_abx\", \"params\" : [%d, \"smooth\", 500], \"token\":\"%s\" }\r\n",
+                next(), Math.max(1700, Math.min(6500, kelvin)), token));
+    }
+
+    synchronized void setAmbientBrightness(int percent) {
+        if (!connected()) return;
+        send(ambientBrightnessCommand(next(), clamp(percent, 1, 100), token));
+    }
+
     synchronized void setAmbientPower(boolean on) {
         Log.i(TAG,"yeelight power "+(on?"on":"off")+" connected="+connected());
         sendCommand(ambientPowerCommand(next(), on, token));
@@ -195,6 +207,12 @@ final class YeelightAmbient implements Closeable {
         return String.format(Locale.ROOT,
                 "{ \"id\":%d, \"method\" : \"bg_set_rgb\", \"params\" : [%d, \"sudden\", 0], \"token\":\"%s\" }\r\n",
                 id, rgb & 0xFFFFFF, token);
+    }
+
+    static String ambientCtCommand(int id, int kelvin, String token) {
+        return String.format(Locale.ROOT,
+                "{ \"id\":%d, \"method\" : \"bg_set_ct_abx\", \"params\" : [%d, \"smooth\", 500], \"token\":\"%s\" }\r\n",
+                id, Math.max(1700, Math.min(6500, kelvin)), token);
     }
 
     static String ambientBrightnessCommand(int id, int percent, String token) {
