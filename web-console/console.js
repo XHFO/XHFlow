@@ -109,7 +109,19 @@
     return {available:points.length>0,ageMs:raw.ageMs,panelWidth:raw.panelWidth,panelHeight:raw.panelHeight,activeRegion:{...region},points,source:'screen-edges'};
   }
   function previewFresh(value,receivedAt,now,online,running,hidden){return !!(value&&value.available&&online&&running&&!hidden&&value.ageMs+Math.max(0,now-receivedAt)<=1500);}
-  const model={stable,address,controller,fadeMs,normalize,normalizeColor,colorDefaults,COLOR_FIELDS,normalizeBlackFilter,normalizeRuntime,runtimeDefaults,confirmedInputs,conditionReady,requestedEnabled,normalizePreview,previewFresh};scope.TVConsoleModel=model;
+  function mainControlHint(status,ambient){
+    const current=status&&status.ambient;if(!current)return '';
+    let hint='';
+    if(current.mainControl==='manual')hint='主灯手动优先 · 切换输入源后恢复';
+    else if((ambient&&ambient.mainLight&&ambient.mainLight.enabled===true)||['office','night','game'].includes(status.scene)){
+      if(current.mainControl==='transitioning')hint='主灯正在柔和过渡 · 约 5 秒';
+      else if(current.mainControl==='observing')hint='正在读取主灯状态，暂缓自动调节';
+      else if(current.mainControl==='verifying')hint='正在确认手动调节，暂缓自动控制';
+    }
+    if(current.mainControlPersistenceError===true)hint+=(hint?'；':'')+'主灯控制状态尚未保存，正在重试';
+    return hint;
+  }
+  const model={stable,address,controller,fadeMs,normalize,normalizeColor,colorDefaults,COLOR_FIELDS,normalizeBlackFilter,normalizeRuntime,runtimeDefaults,confirmedInputs,conditionReady,requestedEnabled,normalizePreview,previewFresh,mainControlHint};scope.TVConsoleModel=model;
   if(typeof module!=='undefined'&&module.exports)module.exports=model;
   if(typeof document==='undefined')return;
 
@@ -167,7 +179,9 @@
     $('ambientMainLight').disabled=busy||!ambientValues.enabled;$('ambientMainMax').disabled=busy||!ambientValues.enabled||!ambientValues.mainLight.enabled;
     $('ambientScan').disabled=!online||busy||ambientBusy;$('ambientProbe').disabled=!online||busy||ambientBusy;
     const ambientStatus=lastStatus&&lastStatus.ambient;
-    $('ambientResult').textContent=ambientHint||(ambientStatus&&ambientStatus.enabled?(ambientStatus.connected?(ambientStatus.mode==='off'?'氛围灯已连接 · 当前场景关闭氛围灯':ambientStatus.frames>0?'氛围灯已连接 · 同色模式，已发送 '+ambientStatus.frames+' 帧':'氛围灯已连接 · 等待画面输出'):('氛围灯未连接：'+(ambientStatus.error||'等待设备响应'))):'取屏幕顶部颜色，经局域网直接控制挂灯背后的氛围灯。');
+    const ambientSummary=ambientHint||(ambientStatus&&ambientStatus.enabled?(ambientStatus.connected?(ambientStatus.mode==='off'?'氛围灯已连接 · 当前场景关闭氛围灯':ambientStatus.frames>0?'氛围灯已连接 · 同色模式，已发送 '+ambientStatus.frames+' 帧':'氛围灯已连接 · 等待画面输出'):('氛围灯未连接：'+(ambientStatus.error||'等待设备响应'))):'取屏幕顶部颜色，经局域网直接控制挂灯背后的氛围灯。');
+    const mainHint=mainControlHint(lastStatus,ambientValues);
+    $('ambientResult').textContent=ambientSummary+(mainHint?' '+mainHint:'');
     renderSceneBindings();
     renderConditions();
     document.querySelector('.workspace').inert=busy||(initializing&&!initialized);

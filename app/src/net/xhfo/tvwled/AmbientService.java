@@ -65,6 +65,7 @@ public final class AmbientService extends Service {
     private String cachedSavedRaw,cachedSavedFingerprint="",fingerprintError="";
     private final Object fingerprintLock=new Object();
     private volatile DisplayEnvironment.Snapshot environment;
+    private YeelightMainControl mainLightControl;
     private DisplayEnvironment environmentMonitor;
     private ScheduledExecutorService powerExecutor;
     private volatile PowerOperation powerOperation;
@@ -151,6 +152,8 @@ public final class AmbientService extends Service {
     @Override public void onCreate(){
         super.onCreate();liveInstance=this;
         powerResume=PowerResumeState.decode(preferences().getString(PowerResumeState.PREF_KEY,""));
+        mainLightControl=new YeelightMainControl(preferences().getString(YeelightMainControl.PREF_KEY,""),
+            value->preferences().edit().putString(YeelightMainControl.PREF_KEY,value).commit());
         getSystemService(NotificationManager.class).createNotificationChannel(new NotificationChannel(CHANNEL,"XH光流",NotificationManager.IMPORTANCE_LOW));
     }
     @Override public int onStartCommand(Intent intent,int flags,int startId){
@@ -212,6 +215,7 @@ public final class AmbientService extends Service {
         if(environmentMonitor!=null)return;
         if(powerExecutor==null||powerExecutor.isShutdown())powerExecutor=Executors.newSingleThreadScheduledExecutor(r->new Thread(r,"TVWLED-power"));
         DisplayEnvironment next=new DisplayEnvironment(this,main,value->{
+            mainLightControl.source(value.inputId,value.inputKnown,value.awake);
             environment=value;reconcile();publish();updateNotification();
         });
         try{next.start();environmentMonitor=next;}
@@ -227,6 +231,7 @@ public final class AmbientService extends Service {
         cancelPower();outputAllowed=false;stopSession("正在读取布局",false);activeConfig=null;
         try{
             LayoutConfig config=new LayoutConfig(preferences().getString("layout",""));
+            mainLightControl.selectAddress(config.ambientAddress);
             activeConfig=config;
             savePowerResume(powerResume.forAddress(config.address));
             error="";reconcile();
@@ -289,7 +294,7 @@ public final class AmbientService extends Service {
         if(initializationFailed)return;
         String preset=config.presetFor(display.inputId);
         Session active=session;
-        if(active!=null&&!java.util.Objects.equals(active.preset,preset)){
+        if(active!=null&&(!java.util.Objects.equals(active.preset,preset)||active.mainLightLease!=mainLightControl.lease())){
             // The panel reported a different input: re-open so the bound scene drives the outputs.
             stopSession("输入源已切换，正在切换场景",false);
             active=null;
@@ -588,6 +593,9 @@ public final class AmbientService extends Service {
                 .put("pendingApply",!savedFingerprint.isEmpty()&&!savedFingerprint.equals(appliedFingerprint)).put("configFingerprintError",fingerprintError);
             JSONObject ambientStatus=new JSONObject().put("enabled",applied!=null&&applied.ambientEnabled).put("address",applied==null?"":applied.ambientAddress)
                 .put("model",applied==null?"":applied.ambientModel).put("connected",false).put("error","").put("frames",0).put("mainBrightness",0).put("lastSentAgeMs",0);
+            boolean mainReadable=details!=null&&details.mainMonitor!=null&&details.mainMonitor.ready();
+            ambientStatus.put("mainControl",mainLightControl.state(details==null?-1:details.mainLightLease,mainReadable))
+                .put("mainReadback",mainReadable).put("mainControlPersistenceError",mainLightControl.persistenceFailed());
             if(details!=null&&details.config.ambientEnabled){
                 ambientStatus.put("connected",details.ambient!=null&&details.ambient.connected()).put("error",details.ambientError).put("frames",details.ambientFrames)
                     .put("mode",ScenePreset.ambientMode(details.preset)).put("mainBrightness",details.ambientMainBrightness).put("lastSentAgeMs",details.ambientLastSent==0?0:Math.max(0,SystemClock.elapsedRealtime()-details.ambientLastSent));
@@ -663,10 +671,12 @@ public final class AmbientService extends Service {
         final LayoutConfig config;
         final String preset;
         final long generation;
+        final long mainLightLease;
         final ScheduledExecutorService sampler=Executors.newSingleThreadScheduledExecutor(r->new Thread(r,"TVWLED-color"));
         final ScheduledExecutorService sender=Executors.newSingleThreadScheduledExecutor(r->new Thread(r,"TVWLED-ddp"));
         final ScheduledExecutorService ambientLoop=Executors.newSingleThreadScheduledExecutor(r->new Thread(r,"TVWLED-yeelight"));
         volatile YeelightAmbient ambient;
+        volatile YeelightMainMonitor mainMonitor;
         volatile int[] topIndices=new int[0];
         volatile double[] topWeights=new double[0];
         final AtomicInteger ambientRgb=new AtomicInteger(-1);
@@ -694,7 +704,7 @@ public final class AmbientService extends Service {
         volatile PreviewFrame previewFrame;
         int sequence=1;
         boolean ownershipNoted;
-        Session(LayoutConfig layout,String scenePreset){config=layout;preset=scenePreset;generation=configurationGeneration;}
+        Session(LayoutConfig layout,String scenePreset){config=layout;preset=scenePreset;generation=configurationGeneration;mainLightLease=mainLightControl.lease();}
         boolean isCurrent(){return active&&outputAllowed&&session==this&&activeConfig==config&&configurationGeneration==generation&&!destroyed&&!closing;}
         void close(){close(true);}
         /**
@@ -706,6 +716,7 @@ public final class AmbientService extends Service {
             active=false;valid=false;sampler.shutdownNow();sender.shutdownNow();ambientLoop.shutdownNow();
             Log.i(TAG,"session close powerOff="+powerOff+" ambient="+(ambient!=null)+" enabled="+config.ambientEnabled);
             YeelightAmbient output=ambient;ambient=null;if(output!=null)output.close();
+            YeelightMainMonitor monitor=mainMonitor;mainMonitor=null;if(monitor!=null)monitor.close();
             if(socket!=null)socket.close();
         }
         void initialize(){
@@ -731,8 +742,18 @@ public final class AmbientService extends Service {
                     Log.i(TAG,"sync uid="+android.os.Process.myUid()+" panel="+size[0]+"x"+size[1]+" points="+coordinates.length+" leds="+config.ledCount);
                     sampler.schedule(this::sample,0,TimeUnit.MILLISECONDS);
                     sender.scheduleAtFixedRate(this::send,0,33,TimeUnit.MILLISECONDS);
-                    if(config.ambientEnabled||ScenePreset.front(preset)){
+                    if(!config.ambientAddress.isEmpty()&&(config.ambientEnabled||ScenePreset.front(preset))){
                         topIndices=config.edgeIndices("top");topWeights=config.edgeWeights("top");
+                        if(ScenePreset.front(preset)||(config.ambientMainLightEnabled&&ScenePreset.MODE_SCREEN.equals(ScenePreset.ambientMode(preset)))){
+                            mainMonitor=new YeelightMainMonitor(config.ambientAddress,new YeelightMainMonitor.Listener(){
+                                public void snapshot(int brightness,int ct){observeMain(brightness,ct,true);}
+                                public void snapshot(int brightness,int ct,long queryAgeMs){
+                                    if(isCurrent())mainLightControl.observe(mainLightLease,brightness,ct,true,SystemClock.elapsedRealtime()-queryAgeMs);
+                                }
+                                public void changed(Integer brightness,Integer ct){observeMain(brightness,ct,false);}
+                            });
+                            mainMonitor.start();
+                        }
                         ambientLoop.scheduleAtFixedRate(this::ambientTick,0,100,TimeUnit.MILLISECONDS);
                     }
                 }
@@ -811,6 +832,13 @@ public final class AmbientService extends Service {
             ambientRgb.set(AmbientMixer.average(rgb,topIndices,topWeights));
             ambientMainBrightness=AmbientMixer.mainLightPercent(rgb,config.ambientMainMaxBrightness);
         }
+        void observeMain(Integer brightness,Integer ct,boolean full){
+            if(isCurrent())mainLightControl.observe(mainLightLease,brightness,ct,full,SystemClock.elapsedRealtime());
+        }
+        boolean mainWritable(){
+            YeelightMainMonitor monitor=mainMonitor;
+            return isCurrent()&&monitor!=null&&monitor.ready();
+        }
         void ambientTick(){
             if(!isCurrent())return;
             long now=SystemClock.elapsedRealtime();
@@ -828,13 +856,15 @@ public final class AmbientService extends Service {
                         return;
                     }
                     ambientError="";ambientKeepAlive=0;ambientHandshakeAt=SystemClock.elapsedRealtime();
+                    if(!isCurrent()||mainLightLease!=mainLightControl.lease())return;
                     String mode=ScenePreset.ambientMode(preset);
                     if(!ambientPowerOn){
                         client.setAmbientPower(!ScenePreset.MODE_OFF.equals(mode));
                         if(preset!=null){
                             // A binding owns the desk lamp; without one the front light is left alone.
-                            client.setMainPower(ScenePreset.front(preset));
-                            if(ScenePreset.front(preset)){client.sendMainBrightness(ScenePreset.frontBrightness(preset));client.setMainCt(ScenePreset.frontCt(preset));}
+                            final YeelightAmbient powered=client;
+                            mainLightControl.power(mainLightLease,ScenePreset.front(preset),SystemClock.elapsedRealtime(),this::isCurrent,
+                                ()->powered.setMainPower(ScenePreset.front(preset)));
                         }
                         ambientPowerOn=true;
                     }
@@ -845,12 +875,26 @@ public final class AmbientService extends Service {
                     if(client.connect(900)){ambientHandshakeAt=SystemClock.elapsedRealtime();ambientKeepAlive=0;ambientError="";}
                     else{ambientError="氛围灯会话刷新失败，将自动重试";return;}
                 }
+                if(!isCurrent()||mainLightLease!=mainLightControl.lease())return;
+                // A new capture/UDP session does not own the desk lamp again. Read the main
+                // light first and retain manual control until a confirmed input-source switch.
+                final YeelightAmbient output=client;
                 String mode=ScenePreset.ambientMode(preset);
+                boolean followsPicture=config.ambientMainLightEnabled&&ScenePreset.MODE_SCREEN.equals(mode);
+                // A game scene uses the current picture directly. Sending its fixed 30% preset
+                // first would immediately interrupt the requested five-second transition.
+                Integer mainLevel=ScenePreset.mainBrightness(preset,followsPicture,ambientRgb.get()>=0,ambientMainBrightness);
+                if(mainLevel!=null){
+                    Integer mainCt=ScenePreset.front(preset)?ScenePreset.frontCt(preset):null;
+                    mainLightControl.transition(mainLightLease,mainLevel,mainCt,SystemClock.elapsedRealtime(),this::mainWritable,(level,ct)->{
+                        if(level!=null)output.sendMainBrightness(level);
+                        if(ct!=null)output.setMainCt(ct);
+                    });
+                }
                 if(ScenePreset.MODE_SCREEN.equals(mode)){
                     int color=ambientRgb.get();
                     if(color>=0){
                         client.sendColor(color,(int)Math.round(config.ambientBrightness*100));
-                        if(config.ambientMainLightEnabled)client.sendMainBrightness(ambientMainBrightness);
                         ambientLastSent=SystemClock.elapsedRealtime();ambientFrames++;
                     }
                 }

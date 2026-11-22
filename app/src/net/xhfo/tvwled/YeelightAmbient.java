@@ -122,16 +122,12 @@ final class YeelightAmbient implements Closeable {
 
     /** Switches the front light, used by presets that want the desk lamp on or off. */
     synchronized void setMainPower(boolean on) {
-        sendCommand(String.format(Locale.ROOT,
-                "{ \"id\":%d, \"method\" : \"set_power\", \"params\" : [\"%s\", \"smooth\", 500], \"token\":\"%s\" }\r\n",
-                next(), on ? "on" : "off", token));
+        sendCommand(mainPowerCommand(next(), on, token));
     }
 
     /** Colour temperature in kelvin; firmware accepts 1700-6500. */
     synchronized void setMainCt(int kelvin) {
-        sendCommand(String.format(Locale.ROOT,
-                "{ \"id\":%d, \"method\" : \"set_ct_abx\", \"params\" : [%d, \"smooth\", 500], \"token\":\"%s\" }\r\n",
-                next(), Math.max(1700, Math.min(6500, kelvin)), token));
+        sendCommand(mainCtCommand(next(), kelvin, token));
     }
 
     /** Front light brightness only; the colour temperature and power state are left alone. */
@@ -205,8 +201,20 @@ final class YeelightAmbient implements Closeable {
 
     static String mainBrightnessCommand(int id, int percent, String token) {
         return String.format(Locale.ROOT,
-                "{ \"id\":%d, \"method\" : \"set_bright\", \"params\" : [%d, \"sudden\", 0], \"token\":\"%s\" }\r\n",
-                id, clamp(percent, 1, 100), token);
+                "{ \"id\":%d, \"method\" : \"set_bright\", \"params\" : [%d, \"smooth\", %d], \"token\":\"%s\" }\r\n",
+                id, clamp(percent, 1, 100), YeelightMainControl.TRANSITION_MS, token);
+    }
+
+    static String mainCtCommand(int id, int kelvin, String token) {
+        return String.format(Locale.ROOT,
+                "{ \"id\":%d, \"method\" : \"set_ct_abx\", \"params\" : [%d, \"smooth\", %d], \"token\":\"%s\" }\r\n",
+                id, clamp(kelvin, 1700, 6500), YeelightMainControl.TRANSITION_MS, token);
+    }
+
+    static String mainPowerCommand(int id, boolean on, String token) {
+        return String.format(Locale.ROOT,
+                "{ \"id\":%d, \"method\" : \"set_power\", \"params\" : [\"%s\", \"smooth\", %d], \"token\":\"%s\" }\r\n",
+                id, on ? "on" : "off", YeelightMainControl.TRANSITION_MS, token);
     }
 
     private void sendCommand(String command) {

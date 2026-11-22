@@ -44,6 +44,12 @@ final class ScenePreset {
         return 1;
     }
 
+    /** Picture-linked scenes wait for their first frame and never flash a fixed intermediate level. */
+    static Integer mainBrightness(String preset, boolean linked, boolean pictureReady, int pictureLevel) {
+        if (linked && MODE_SCREEN.equals(ambientMode(preset))) return pictureReady ? Math.max(1, Math.min(100, pictureLevel)) : null;
+        return front(preset) ? frontBrightness(preset) : null;
+    }
+
     static int frontCt(String preset) {
         if ("night".equals(preset)) return 2700;
         if ("office".equals(preset) || "game".equals(preset)) return 4000;
